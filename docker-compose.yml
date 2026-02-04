@@ -98,6 +98,28 @@ services:
     networks:
       - cs_dwh
 
+  superset:
+    # image: apache/superset
+    build: 
+      context: .
+      dockerfile: Dockerfile.superset
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    networks:
+      - cs_dwh
+    volumes:
+      - superset_data:/var/lib/superset
+      - superset_config:/app/superset_home
+    environment:
+      - SUPERSET_SECRET_KEY=9wc5+erMt60+lxrXDf3RjeIR+zONpEFusO00Np7JzfliMTI1e+RXnHcQ
+      - TZ=Europe/Moscow
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
 networks:
   cs_dwh:
     driver: bridge
@@ -105,4 +127,6 @@ networks:
 volumes:
   grafana_lib:
   kafka-data:
+  superset_data:
+  superset_config:
 
