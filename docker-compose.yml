@@ -23,8 +23,8 @@ services:
 
   kafka:
     image: apache/kafka:3.8.0
-    hostname: kafka
-    container_name: kafka
+    # hostname: kafka
+    # container_name: kafka
     ports:
       - 9092:9092
     # Если хочешь сохранять топики/сообщения между `docker compose down/up` — раскомментируй:
@@ -50,7 +50,7 @@ services:
       - cs_dwh
 
   kafka-ui:
-    container_name: kafka-ui
+    # container_name: kafka-ui
     image: provectuslabs/kafka-ui:v0.7.2
     ports:
       - 8082:8080
@@ -99,7 +99,7 @@ services:
       - cs_dwh
 
 networks:
-  ch_replicated:
+  cs_dwh:
     driver: bridge
 
 volumes:
