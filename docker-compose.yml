@@ -1,0 +1,108 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.1
+    environment:
+        TZ: "Europe/Moscow"
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - cs_dwh
+    volumes:
+      - ./configs/default_user.xml:/etc/clickhouse-server/users.d/default_user.xml
+      # - ./configs/z_config.xml:/etc/clickhouse-server/config.d/z_config.xml
+      # - ./configs/macros_ch1.xml:/etc/clickhouse-server/config.d/macros.xml
+      # - ./configs/clickhouse-backup.yml:/etc/clickhouse-backup/config.yml
+      # - ./configs/s3-storage.xml:/etc/clickhouse-server/config.d/s3-storage.xml
+      - ./configs/prometheus_ch.xml:/etc/clickhouse-server/config.d/s3-prometheus_ch.xml
+    ports:
+      - "8002:9000"
+      - "9123:8123"
+
+  kafka:
+    image: apache/kafka:3.8.0
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - 9092:9092
+    # Если хочешь сохранять топики/сообщения между `docker compose down/up` — раскомментируй:
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    networks:
+      - cs_dwh
+
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:v0.7.2
+    ports:
+      - 8082:8080
+    depends_on:
+      - kafka
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      KAFKA_CLUSTERS_0_NAME: "Kafka Cluster"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:29092"
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: "PLAINTEXT"
+    networks:
+      - cs_dwh
+
+  prometheus:
+    image: prom/prometheus:v2.53.4
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # container_name: prometheus
+    # hostname: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - 9090:9090
+    restart: unless-stopped
+    environment:
+      TZ: "Europe/Moscow"
+    networks:
+      - cs_dwh
+
+  grafana:
+    image: grafana/grafana:11.5.2-ubuntu
+    user: root
+    depends_on:
+      - prometheus
+    ports:
+      - 3000:3000
+    volumes:
+      - grafana_lib:/var/lib/grafana
+      - ./configs/grafana/provisioning/:/etc/grafana/provisioning/
+    # container_name: grafana
+    # hostname: grafana
+    restart: unless-stopped
+    environment:
+      TZ: "Europe/Moscow"
+    networks:
+      - cs_dwh
+
+networks:
+  ch_replicated:
+    driver: bridge
+
+volumes:
+  grafana_lib:
+  kafka-data:
+
