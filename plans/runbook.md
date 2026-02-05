@@ -35,6 +35,8 @@ make ddl
 - `make ddl` — применяет SQL из `plans/clickhouse_ddl.md` в контейнер ClickHouse (извлекает все блоки ```sql``` и исполняет их через `clickhouse-client`).
 - `make data` — пересоздаёт топики (по умолчанию) и публикует события из `data/*.jsonl` в Kafka (1 строка = 1 Kafka message value).
 
+План реализации механики заливки (дизайн/решения): `plans/kafka_ingest_plan.md`.
+
 ## Загрузка данных в Kafka (`make data`)
 
 ### Топики
@@ -79,4 +81,3 @@ RESET_TOPICS=0 make data
 
 - для соединений “контейнер → Kafka” используйте `kafka:29092`;
 - `localhost:9092` подходит только для клиентов на хосте.
-
