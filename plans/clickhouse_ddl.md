@@ -182,13 +182,15 @@ ORDER BY (kafka_topic, kafka_partition, kafka_offset, ingest_ts);
 ```sql
 -- Пример: одна колонка raw, один message = одна строка.
 -- Замените broker/topic/group под вашу инфраструктуру.
+-- Если ClickHouse запущен в docker compose в одной сети с Kafka — обычно это `kafka:29092`.
+-- Если ClickHouse подключается к Kafka с хоста — обычно это `localhost:9092`.
 CREATE TABLE IF NOT EXISTS stg.kafka_browser_raw
 (
     raw String
 )
 ENGINE = Kafka
 SETTINGS
-    kafka_broker_list = 'kafka:9092',
+    kafka_broker_list = 'kafka:29092',
     kafka_topic_list = 'browser_events',
     kafka_group_name = 'ch_stg_browser',
     kafka_format = 'JSONAsString',
@@ -214,7 +216,7 @@ FROM stg.kafka_browser_raw;
 CREATE TABLE IF NOT EXISTS stg.kafka_location_raw (raw String)
 ENGINE = Kafka
 SETTINGS
-    kafka_broker_list = 'kafka:9092',
+    kafka_broker_list = 'kafka:29092',
     kafka_topic_list = 'location_events',
     kafka_group_name = 'ch_stg_location',
     kafka_format = 'JSONAsString',
@@ -224,7 +226,7 @@ SETTINGS
 CREATE TABLE IF NOT EXISTS stg.kafka_device_raw (raw String)
 ENGINE = Kafka
 SETTINGS
-    kafka_broker_list = 'kafka:9092',
+    kafka_broker_list = 'kafka:29092',
     kafka_topic_list = 'device_events',
     kafka_group_name = 'ch_stg_device',
     kafka_format = 'JSONAsString',
@@ -234,7 +236,7 @@ SETTINGS
 CREATE TABLE IF NOT EXISTS stg.kafka_geo_raw (raw String)
 ENGINE = Kafka
 SETTINGS
-    kafka_broker_list = 'kafka:9092',
+    kafka_broker_list = 'kafka:29092',
     kafka_topic_list = 'geo_events',
     kafka_group_name = 'ch_stg_geo',
     kafka_format = 'JSONAsString',
