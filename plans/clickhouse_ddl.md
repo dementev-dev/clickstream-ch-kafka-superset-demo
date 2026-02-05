@@ -104,7 +104,51 @@ flowchart LR
 
 ---
 
-## 0) Базы данных
+## План актуализации DDL (target state репозитория)
+
+Цель: перестать исполнять DDL из markdown и хранить **исполняемые** DDL в отдельных `ddl/*.sql` (по слоям), чтобы:
+
+- применять их “тонким раннером” через `clickhouse-client` (через `make ddl`);
+- в будущем легко перенести выполнение в Airflow (1 файл = 1 task, линейные зависимости).
+
+Важно: Kafka-объекты STG включаем **по умолчанию** (как часть `ddl/10_stg.sql`).
+
+### Артефакты DDL (планируемые файлы)
+
+- `ddl/00_databases.sql` — базы `stg/ods/dds/dm`.
+- `ddl/10_stg.sql` — STG raw (`stg.*_raw`) + Kafka source tables (`ENGINE = Kafka`) + MV `Kafka → STG`.
+- `ddl/20_ods.sql` — ODS таблицы типизации + DQ (`parse_errors`) + MV `STG → ODS`.
+- `ddl/30_dds.sql` — DDS сущности (`dds.event`, `dds.click`) + MV `ODS → DDS`.
+- `ddl/40_dm.sql` — витрины `VIEW` для Superset (`dm.v_*`).
+
+BI-ограничения (ресурсы/пользователь) **не выносим в `ddl/*.sql`**: оставляем это только как текст/пример в этом плане, чтобы не смешивать инфраструктуру доступа с DDL витрин.
+
+### Исполнение DDL (make сейчас / Airflow потом)
+
+Требования к файлам `ddl/*.sql`:
+
+- идемпотентность (`IF NOT EXISTS`), чтобы повторные прогоны были безопасны;
+- строгий порядок исполнения: `00 → 10 → 20 → 30 → 40` (из‑за зависимостей MV);
+- единые имена топиков Kafka: `browser_events`, `location_events`, `device_events`, `geo_events` (их создаёт `make data`).
+
+Текущее “как запускаем” (целевое, для реализации следующим шагом):
+
+- `make ddl` вызывает `scripts/apply_clickhouse_ddl.sh`;
+- скрипт прогоняет `ddl/*.sql` по порядку через `clickhouse-client --multiquery` внутри контейнера ClickHouse.
+
+Airflow-версия (целевое): тот же порядок, но каждый `ddl/<step>.sql` — отдельный таск, зависимости линейные.
+
+### Параметры окружения (docker compose)
+
+- Kafka для подключений **из контейнера ClickHouse**: `kafka:29092` (а `localhost:9092` — только для клиентов на хосте).
+- ClickHouse порты на хосте: native `localhost:8002`, HTTP `localhost:9123` (см. `docker-compose.yml`).
+- Пользователь ClickHouse: `default`, пароль задан в `configs/default_user.xml` (сейчас `123456`).
+
+---
+
+## Приложение A: текущий inline DDL (legacy; будет вынесен в `ddl/*.sql`)
+
+### 0) Базы данных
 
 ```sql
 CREATE DATABASE IF NOT EXISTS stg;
@@ -115,7 +159,7 @@ CREATE DATABASE IF NOT EXISTS dm;
 
 ---
 
-## 1) STG — сырой JSON (+ метаданные доставки)
+### 1) STG — сырой JSON (+ метаданные доставки)
 
 STG-таблицы делаем максимально простыми и “дешевыми”: строка JSON + время приёма + (опционально) Kafka-метаданные.
 
@@ -342,7 +386,7 @@ ALTER USER superset SETTINGS PROFILE superset_profile;
 
 ---
 
-## 2) ODS — типизация + дедупликация + DQ
+### 2) ODS — типизация + дедупликация + DQ
 
 Принцип: на выходе ODS — “как в источнике, но типизировано и пригодно для джойнов”.
 Дедупликация — по бизнес-ключу (`event_id` или `click_id`) с версией `src_ingest_ts`.
@@ -542,7 +586,7 @@ FROM stg.geo_raw;
 
 ---
 
-## 3) DDS — детальный слой (event + click context)
+### 3) DDS — детальный слой (event + click context)
 
 DDS хранит **минимально необходимую детализацию для аналитики**, но уже “собранную”:
 
@@ -714,7 +758,7 @@ LEFT JOIN ods.browser_event AS b
 
 ---
 
-## 4) DM — витрины для Superset
+### 4) DM — витрины для Superset
 
 ### 4.1 Enriched view (удобная “таблица фактов” для аналитики)
 
@@ -809,7 +853,7 @@ GROUP BY event_date, error_code;
 
 ---
 
-## 5) Практические заметки для демо
+### 5) Практические заметки для демо
 
 - Для быстрой локальной загрузки **первых N строк** (без Kafka) удобно использовать формат `LineAsString`, он кладёт каждую строку файла как `String` в колонку `raw`:
 
