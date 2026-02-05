@@ -15,6 +15,8 @@
 ## Ключевые артефакты
 
 - `plans/clickhouse_ddl.md` — основной документ со схемой слоёв, DDL/MV и витринами DM.
+- `plans/runbook.md` — runbook: порядок запуска (`make up`/`make ddl`/`make data`) и параметры.
+- `plans/kafka_ingest_plan.md` — детальный план реализации загрузки данных в Kafka.
 - `data/DE-task.md` — текст задания.
 - `data/*.jsonl` — исходные данные (могут быть грязными).
 - `configs/` — конфиги ClickHouse/Prometheus/Grafana (по мере развития).
@@ -29,6 +31,9 @@
 
 Базовые команды:
 
+- `make up` (или `docker compose up -d`)
+- `make ddl` (применяет SQL из `plans/clickhouse_ddl.md` в ClickHouse)
+- `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
 - `docker compose up -d`
 - `docker compose ps`
 - `docker compose logs -f --tail=200 <service>`
