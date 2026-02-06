@@ -1,0 +1,23 @@
+# Use the official Airflow image as base
+FROM apache/airflow:2.9.3
+
+# Set environment variables
+ENV AIRFLOW_HOME=/opt/airflow
+
+# Copy the project requirements file
+COPY --chown=airflow:0 requirements.txt ${AIRFLOW_HOME}/requirements.txt
+
+# Install the required Python packages
+RUN pip install --no-cache-dir -r ${AIRFLOW_HOME}/requirements.txt
+
+# Create necessary directories
+RUN mkdir -p /opt/airflow/dags /opt/airflow/logs /opt/airflow/config /opt/airflow/data
+
+# Set working directory
+WORKDIR ${AIRFLOW_HOME}
+
+# Expose the webserver port
+EXPOSE 8080
+
+# The image will use Airflow's default entrypoint
+# Commands will be passed at runtime
