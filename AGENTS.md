@@ -12,6 +12,7 @@
 
 - Kafka (источник событий, 1 JSON message = 1 event)
 - ClickHouse (STG → ODS → DDS → DM)
+- **Airflow** (оркестрация ETL-пайплайна)
 - Superset (BI поверх витрин)
 - Prometheus + Grafana (мониторинг)
 - простой инструмент/скрипт, который читает `.jsonl` и пишет события в Kafka
@@ -19,6 +20,7 @@
 ## Ключевые артефакты
 
 ### Исполняемые файлы (текущая структура)
+- `dags/` — Airflow DAGs для оркестрации ETL
 - `ddl/` — SQL для создания объектов БД:
   - `00_databases.sql` — создание БД stg/ods/dds/dm
   - `10_stg.sql` — STG слой (Kafka Engine + MV)
@@ -32,6 +34,8 @@
   - `apply_clickhouse_ddl.sh` — применение DDL
   - `load_kafka_data.sh` — загрузка в Kafka
   - `run_batch.sh` — запуск batch-процесса
+- `airflow/` — конфигурация Airflow:
+  - `requirements.txt` — зависимости (clickhouse-connect и др.)
 
 ### Планы и документация (legacy)
 - `plans/clickhouse_ddl.md` — исходный план (inline DDL, legacy)
@@ -67,6 +71,7 @@
 - ClickHouse HTTP: `localhost:9123`
 - Kafka: `localhost:9092`
 - Kafka UI: `http://localhost:8082`
+- **Airflow: `http://localhost:8080` (admin/admin)**
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`
 
@@ -89,6 +94,7 @@
 
 - Kafka ingest: наличие данных в `stg.*` и типизированных строк в `ods.*`.
 - Мониторинг: доступность `/metrics` у ClickHouse и скрейп в Prometheus.
+- **Airflow: `http://localhost:8080` должен показывать UI и DAG `etl_pipeline`.**
 - BI: витрина `dm.v_events_enriched` должна отвечать за разумное время при фильтре по дате.
 
 ## Связанная документация

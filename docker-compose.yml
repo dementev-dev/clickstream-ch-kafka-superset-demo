@@ -2,13 +2,9 @@ x-airflow-env: &airflow-default-env
   AIRFLOW__CORE__LOAD_EXAMPLES: "False"
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-metadata:5432/airflow
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
-  AIRFLOW__WEBSERVER__SECRET_KEY: replace-me-with-random-string
-  POSTGRES_TRAINING_HOST: postgres-training
-  POSTGRES_TRAINING_PORT: "5432"
-  POSTGRES_TRAINING_DB: training
-  POSTGRES_TRAINING_USER: student
-  POSTGRES_TRAINING_PASSWORD: student
-  AIRFLOW_CONN_POSTGRES_TRAINING: postgresql://student:student@postgres-training:5432/training
+  AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-replace-me-with-random-string}
+  # ClickHouse connection для ETL
+  AIRFLOW_CONN_CLICKHOUSE_DEFAULT: clickhouse://default:123456@clickhouse:8123/default
 
 
 services:
@@ -98,8 +94,10 @@ services:
 
   # Airflow webserver
   airflow-webserver:
-    build: .
-    image: airflow-optimized:2.9.2
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    image: airflow-optimized:2.9.3
     environment:
       <<: *airflow-default-env
     command: >
@@ -118,13 +116,14 @@ services:
         condition: service_completed_successfully
       postgres-metadata:
         condition: service_healthy
-      postgres-training:
-        condition: service_healthy
+      clickhouse:
+        condition: service_started
 
   # Airflow scheduler
   airflow-scheduler:
-    build: .
-    # image: airflow-optimized:2.9.2
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     environment:
       <<: *airflow-default-env
     command: >
@@ -141,14 +140,15 @@ services:
         condition: service_completed_successfully
       postgres-metadata:
         condition: service_healthy
-      postgres-training:
-        condition: service_healthy
+      clickhouse:
+        condition: service_started
 
   # Airflow init to create admin user
   airflow-init:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     user: "0:0"
-    # image: airflow-optimized:2.9.3
     environment:
       <<: *airflow-default-env
     volumes:
@@ -164,8 +164,8 @@ services:
         umask 000 &&
         su -s /bin/bash airflow -c 'airflow db migrate' &&
         su -s /bin/bash airflow -c 'airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.org' &&
-        su -s /bin/bash airflow -c 'airflow connections delete postgres_training || true' &&
-        su -s /bin/bash airflow -c \"airflow connections add 'postgres_training' --conn-uri \\\"$${AIRFLOW_CONN_POSTGRES_TRAINING}\\\" --conn-description 'Training exercises database'\"
+        su -s /bin/bash airflow -c 'airflow connections delete clickhouse_default || true' &&
+        su -s /bin/bash airflow -c \"airflow connections add 'clickhouse_default' --conn-uri \\\"$${AIRFLOW_CONN_CLICKHOUSE_DEFAULT}\\\" --conn-description 'ClickHouse DWH'\"
       "
     depends_on:
       postgres-metadata:

@@ -1,6 +1,6 @@
 # ClickHouse Mini DWH для кликстрима
 
-[![Stack](https://img.shields.io/badge/stack-Kafka%20%7C%20ClickHouse%20%7C%20Superset-blue)](./docker-compose.yml)
+[![Stack](https://img.shields.io/badge/stack-Kafka%20%7C%20ClickHouse%20%7C%20Airflow%20%7C%20Superset-blue)](./docker-compose.yml)
 [![Layers](https://img.shields.io/badge/layers-STG%20→%20ODS%20→%20DDS%20→%20DM-green)](./docs/ARCHITECTURE.md)
 [![License](https://img.shields.io/badge/license-Educational-orange)]()
 
@@ -57,6 +57,7 @@ docker compose exec clickhouse clickhouse-client \
 |--------|-----|------------|
 | ClickHouse HTTP | http://localhost:9123/play | SQL-запросы |
 | Kafka UI | http://localhost:8082 | Просмотр топиков |
+| Airflow | http://localhost:8080 | Оркестрация ETL (admin/admin) |
 | Superset | http://localhost:8088 | BI-дашборды |
 | Prometheus | http://localhost:9090 | Метрики |
 | Grafana | http://localhost:3000 | Визуализация метрик |
@@ -85,7 +86,12 @@ flowchart TB
         DM["DM — витрины"]
     end
 
+    subgraph Airflow["⚙️ Airflow"]
+        DAG[ETL DAGs]
+    end
+
     Sources -->|make data| Kafka -->|MV| STG -->|MV| ODS -->|Batch SQL| DDS -->|VIEW| DM
+    DAG -.->|оркестрация| ODS & DDS & DM
 ```
 
 **Поток данных:**
@@ -102,9 +108,12 @@ flowchart TB
 
 ```
 .
+├── dags/             # Airflow DAGs для оркестрации
 ├── ddl/              # SQL для создания объектов (00_databases → 40_dm)
 ├── jobs/             # Batch-трансформации (ODS→DDS, DDS→DM)
 ├── scripts/          # Автоматизация (apply ddl, load data, run batch)
+├── airflow/          # Конфигурация Airflow
+│   └── requirements.txt
 ├── docs/             # Документация
 │   └── ARCHITECTURE.md   # Подробное описание слоёв
 ├── data/             # Исходные JSONL файлы
@@ -187,7 +196,10 @@ flowchart LR
 
 ## 🔮 Развитие проекта
 
-- [ ] **Airflow** — оркестрация batch-процесса
+### ✅ Реализовано
+- [x] **Airflow** — оркестрация batch-процесса (инфраструктура готова, DAGs в разработке)
+
+### 📋 В планах
 - [ ] **Инкрементальный batch** — watermark-based загрузка
 - [ ] **Материализация витрин** — для тяжёлых агрегаций
 - [ ] **DQ мониторинг** — алерты на ошибки парсинга

@@ -1,14 +1,11 @@
-# Optimized requirements for Airflow Docker setup
-# Only includes packages actually used in DAGs
+# Airflow requirements для ClickHouse DWH проекта
 
-# Core database connector
+# Core database connector для metadata
 psycopg2-binary==2.9.9
 
-# Data processing (used in data_processing_dag.py and file_operations_dag.py)
+# ClickHouse provider для ETL
+# Примечание: официальный провайдер deprecated, используем clickhouse-connect
+clickhouse-connect==0.8.0
+
+# Для работы с данными
 pandas==2.1.4
-
-# Data generation library (used in file_operations_dag.py)
-mimesis==15.1.0
-
-# Airflow PostgreSQL provider (used in sql_basic_dag.py and data_processing_dag.py)
-apache-airflow-providers-postgres==5.11.1

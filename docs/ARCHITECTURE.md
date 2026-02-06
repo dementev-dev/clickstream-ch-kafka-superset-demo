@@ -586,15 +586,22 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 
 ### Airflow-оркестрация
 
+Инфраструктура Airflow развёрнута и готова к использованию:
+
 ```python
-# dag.py
-with DAG('clickhouse_etl'):
+# dags/etl_pipeline_dag.py
+with DAG('etl_pipeline'):
     ddl = BashOperator(task_id='ddl', bash_command='make ddl')
     load = BashOperator(task_id='load', bash_command='make data')
     transform = BashOperator(task_id='transform', bash_command='make transform')
     
     ddl >> load >> transform
 ```
+
+**Подключение к ClickHouse:**
+- Connection: `clickhouse_default`
+- URL: `clickhouse://default:123456@clickhouse:8123/default`
+- Provider: `clickhouse-connect` (в `airflow/requirements.txt`)
 
 ---
 
