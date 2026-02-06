@@ -1,4 +1,4 @@
-.PHONY: up ddl data
+.PHONY: up ddl data transform
 
 COMPOSE ?= docker compose
 
@@ -10,3 +10,6 @@ ddl:
 
 data:
 	bash ./scripts/load_kafka_data.sh
+
+transform:
+	bash ./scripts/run_batch.sh
