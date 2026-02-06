@@ -6,7 +6,7 @@
 -- Strategy: full rebuild for demo; incremental for production
 INSERT INTO dds.click
 SELECT
-    d.click_id,
+    c.click_id,
     d.user_domain_id,
     d.user_custom_id,
     d.device_type,
@@ -22,14 +22,33 @@ SELECT
     g.ip_address,
     now64(3) AS dds_update_ts,
     arrayFilter(x -> x != '', arrayConcat(
-        d.parse_errors,
+        ifNull(d.parse_errors, []),
+        if(d.click_id IS NULL, ['device_not_found'], []),
         if(g.click_id IS NULL, ['geo_not_found'], []),
         if(g.geo_country IS NULL, ['geo_country_missing'], [])
     )) AS ods_parse_errors
 FROM (
+    -- Union of all click ids to keep geo-only/device-only arrivals
+    SELECT click_id
+    FROM (
+        SELECT assumeNotNull(click_id) AS click_id
+        FROM ods.device_by_click
+        WHERE click_id IS NOT NULL
+        GROUP BY click_id
+    )
+    UNION DISTINCT
+    SELECT click_id
+    FROM (
+        SELECT assumeNotNull(click_id) AS click_id
+        FROM ods.geo_by_click
+        WHERE click_id IS NOT NULL
+        GROUP BY click_id
+    )
+) AS c
+LEFT JOIN (
     -- Latest device snapshot from ODS
     SELECT
-        click_id,
+        assumeNotNull(click_id) AS click_id,
         argMax(user_domain_id, src_ingest_ts) AS user_domain_id,
         argMax(user_custom_id, src_ingest_ts) AS user_custom_id,
         argMax(device_type, src_ingest_ts) AS device_type,
@@ -41,11 +60,11 @@ FROM (
     FROM ods.device_by_click
     WHERE click_id IS NOT NULL
     GROUP BY click_id
-) AS d
+) AS d ON d.click_id = c.click_id
 LEFT JOIN (
     -- Latest geo snapshot from ODS
     SELECT
-        click_id,
+        assumeNotNull(click_id) AS click_id,
         argMax(geo_country, src_ingest_ts) AS geo_country,
         argMax(geo_region_name, src_ingest_ts) AS geo_region_name,
         argMax(geo_timezone, src_ingest_ts) AS geo_timezone,
@@ -55,7 +74,7 @@ LEFT JOIN (
     FROM ods.geo_by_click
     WHERE click_id IS NOT NULL
     GROUP BY click_id
-) AS g ON g.click_id = d.click_id;
+) AS g ON g.click_id = c.click_id;
 
 -- Refresh DDS.event (from browser + location)
 INSERT INTO dds.event

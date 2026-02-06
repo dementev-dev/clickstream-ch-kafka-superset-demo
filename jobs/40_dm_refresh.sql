@@ -40,6 +40,8 @@ PARTITION BY toYYYYMM(check_date)
 ORDER BY (check_date, layer, table_name, check_name);
 
 -- Truncate and refill DQ summary
+TRUNCATE TABLE dm.dq_summary;
+
 INSERT INTO dm.dq_summary
 SELECT
     today() AS check_date,

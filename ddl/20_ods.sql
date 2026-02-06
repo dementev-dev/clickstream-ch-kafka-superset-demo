@@ -65,6 +65,34 @@ SELECT
 FROM stg.browser_raw
 WHERE event_id IS NOT NULL;  -- Filter NULL keys to error table
 
+CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_browser_raw_to_ods_errors
+TO ods.browser_event_errors
+AS
+WITH
+    toUUIDOrNull(JSONExtractString(raw, 'event_id')) AS event_id,
+    parseDateTime64BestEffortOrNull(JSONExtractString(raw, 'event_timestamp'), 6) AS event_ts,
+    toUUIDOrNull(JSONExtractString(raw, 'click_id')) AS click_id,
+    arrayFilter(x -> x != '', [
+        if(event_id IS NULL, 'bad_event_id', ''),
+        if(event_ts IS NULL, 'bad_event_timestamp', ''),
+        if(click_id IS NULL, 'bad_click_id', '')
+    ]) AS parse_errors
+SELECT
+    ingest_ts,
+    kafka_topic,
+    kafka_partition,
+    kafka_offset,
+    kafka_ts,
+    raw,
+    arrayStringConcat(parse_errors, ',') AS error_reason
+FROM stg.browser_raw
+WHERE length(parse_errors) > 0
+    AND (
+        event_id IS NULL
+        OR event_ts IS NULL
+        OR click_id IS NULL
+    );
+
 -- ODS: location_events
 CREATE TABLE IF NOT EXISTS ods.location_event
 (
@@ -122,6 +150,26 @@ SELECT
     ]) AS parse_errors
 FROM stg.location_raw
 WHERE event_id IS NOT NULL;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_location_raw_to_ods_errors
+TO ods.location_event_errors
+AS
+WITH
+    toUUIDOrNull(JSONExtractString(raw, 'event_id')) AS event_id,
+    arrayFilter(x -> x != '', [
+        if(event_id IS NULL, 'bad_event_id', '')
+    ]) AS parse_errors
+SELECT
+    ingest_ts,
+    kafka_topic,
+    kafka_partition,
+    kafka_offset,
+    kafka_ts,
+    raw,
+    arrayStringConcat(parse_errors, ',') AS error_reason
+FROM stg.location_raw
+WHERE length(parse_errors) > 0
+    AND event_id IS NULL;
 
 -- ODS: device_events
 CREATE TABLE IF NOT EXISTS ods.device_by_click
@@ -182,6 +230,31 @@ SELECT
 FROM stg.device_raw
 WHERE click_id IS NOT NULL;
 
+CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_device_raw_to_ods_errors
+TO ods.device_by_click_errors
+AS
+WITH
+    toUUIDOrNull(JSONExtractString(raw, 'click_id')) AS click_id,
+    toUUIDOrNull(JSONExtractString(raw, 'user_domain_id')) AS user_domain_id,
+    arrayFilter(x -> x != '', [
+        if(click_id IS NULL, 'bad_click_id', ''),
+        if(user_domain_id IS NULL, 'bad_user_domain_id', '')
+    ]) AS parse_errors
+SELECT
+    ingest_ts,
+    kafka_topic,
+    kafka_partition,
+    kafka_offset,
+    kafka_ts,
+    raw,
+    arrayStringConcat(parse_errors, ',') AS error_reason
+FROM stg.device_raw
+WHERE length(parse_errors) > 0
+    AND (
+        click_id IS NULL
+        OR user_domain_id IS NULL
+    );
+
 -- ODS: geo_events
 CREATE TABLE IF NOT EXISTS ods.geo_by_click
 (
@@ -239,3 +312,31 @@ SELECT
     ]) AS parse_errors
 FROM stg.geo_raw
 WHERE click_id IS NOT NULL;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_geo_raw_to_ods_errors
+TO ods.geo_by_click_errors
+AS
+WITH
+    toUUIDOrNull(JSONExtractString(raw, 'click_id')) AS click_id,
+    toFloat64OrNull(JSONExtractString(raw, 'geo_latitude')) AS geo_latitude,
+    toFloat64OrNull(JSONExtractString(raw, 'geo_longitude')) AS geo_longitude,
+    arrayFilter(x -> x != '', [
+        if(click_id IS NULL, 'bad_click_id', ''),
+        if(geo_latitude IS NULL, 'bad_geo_latitude', ''),
+        if(geo_longitude IS NULL, 'bad_geo_longitude', '')
+    ]) AS parse_errors
+SELECT
+    ingest_ts,
+    kafka_topic,
+    kafka_partition,
+    kafka_offset,
+    kafka_ts,
+    raw,
+    arrayStringConcat(parse_errors, ',') AS error_reason
+FROM stg.geo_raw
+WHERE length(parse_errors) > 0
+    AND (
+        click_id IS NULL
+        OR geo_latitude IS NULL
+        OR geo_longitude IS NULL
+    );
