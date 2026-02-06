@@ -4,7 +4,11 @@
 
 ## Цель репозитория
 
-Развернуть в `docker compose` минимальный аналитический стек:
+Решение [тестового задания DE](./data/DE-task.md) — развернуть в `docker compose` минимальный аналитический стек для обработки кликстрима e-commerce:
+
+**Задача:** Подготовить данные для первичного анализа и собрать дашборд, на котором бизнес может сделать выводы.
+
+**Итоговый стек:**
 
 - Kafka (источник событий, 1 JSON message = 1 event)
 - ClickHouse (STG → ODS → DDS → DM)
@@ -14,12 +18,29 @@
 
 ## Ключевые артефакты
 
-- `plans/clickhouse_ddl.md` — основной документ со схемой слоёв, DDL/MV и витринами DM.
-- `plans/runbook.md` — runbook: порядок запуска (`make up`/`make ddl`/`make data`) и параметры.
-- `plans/kafka_ingest_plan.md` — детальный план реализации загрузки данных в Kafka.
+### Исполняемые файлы (текущая структура)
+- `ddl/` — SQL для создания объектов БД:
+  - `00_databases.sql` — создание БД stg/ods/dds/dm
+  - `10_stg.sql` — STG слой (Kafka Engine + MV)
+  - `20_ods.sql` — ODS слой (типизация + MV для ошибок)
+  - `30_dds.sql` — DDS слой (таблицы для batch-загрузки)
+  - `40_dm.sql` — DM слой (витрины VIEW)
+- `jobs/` — batch-трансформации:
+  - `30_dds_refresh.sql` — ODS → DDS (argMax + JOIN)
+  - `40_dm_refresh.sql` — обновление DQ_summary
+- `scripts/` — скрипты автоматизации:
+  - `apply_clickhouse_ddl.sh` — применение DDL
+  - `load_kafka_data.sh` — загрузка в Kafka
+  - `run_batch.sh` — запуск batch-процесса
+
+### Планы и документация (legacy)
+- `plans/clickhouse_ddl.md` — исходный план (inline DDL, legacy)
+- `plans/runbook.md` — runbook
+- `plans/kafka_ingest_plan.md` — план загрузки в Kafka
+- `docs/ARCHITECTURE.md` — подробное описание архитектуры
 - `data/DE-task.md` — текст задания.
 - `data/*.jsonl` — исходные данные (могут быть грязными).
-- `configs/` — конфиги ClickHouse/Prometheus/Grafana (по мере развития).
+- `configs/` — конфиги ClickHouse/Prometheus/Grafana.
 
 ## Правила по данным (важно)
 
@@ -32,8 +53,9 @@
 Базовые команды:
 
 - `make up` (или `docker compose up -d`)
-- `make ddl` (применяет SQL из `plans/clickhouse_ddl.md` в ClickHouse)
+- `make ddl` (применяет SQL из `ddl/*.sql` в ClickHouse)
 - `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
+- `make transform` (запускает batch-процесс ODS → DDS → DM)
 - `docker compose up -d`
 - `docker compose ps`
 - `docker compose logs -f --tail=200 <service>`
@@ -58,12 +80,22 @@
 - Держать изменения минимальными и по теме задания (инфра, схема, ingest, витрины).
 - Не коммитить секреты. Если требуется пароль/ключи — использовать `.env` и примеры `.env.example`.
 - README/планы обновлять вместе с изменениями инфраструктуры/DDL.
+- **Комментарии в коде — на русском языке**:
+  - SQL: заголовочный блок с описанием файла, комментарии к каждому логическому блоку
+  - Bash: шапка с назначением/запуском/требованиями, секции разделены `# -----`
+  - См. существующие файлы как пример (`ddl/20_ods.sql`, `jobs/30_dds_refresh.sql`, `scripts/run_batch.sh`)
 
 ## Быстрые проверки
 
 - Kafka ingest: наличие данных в `stg.*` и типизированных строк в `ods.*`.
 - Мониторинг: доступность `/metrics` у ClickHouse и скрейп в Prometheus.
 - BI: витрина `dm.v_events_enriched` должна отвечать за разумное время при фильтре по дате.
+
+## Связанная документация
+
+- [README.md](./README.md) — пользовательская документация (быстрый старт, архитектура)
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — подробное описание слоёв и технических решений
+- [data/DE-task.md](./data/DE-task.md) — исходное задание
 
 ## Примечания по текущему состоянию (если что-то “не встаёт”)
 
