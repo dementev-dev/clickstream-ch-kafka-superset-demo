@@ -1,14 +1,29 @@
--- STG layer: raw JSON storage + Kafka ingestion
+-- ============================================================================
+-- Слой STG (Staging) — сырые JSON + интеграция с Kafka
+-- ============================================================================
+-- Назначение:
+--   - Хранение сырых данных "как есть" из Kafka
+--   - Метаданные доставки (topic, partition, offset, timestamp)
+--   - Источник для отладки и восстановления
+--
+-- Поток данных:
+--   Kafka → kafka_*_raw (ENGINE=Kafka) → MV → *_raw (MergeTree)
+-- ============================================================================
 
--- Raw storage tables (target for MV from Kafka)
+-- ----------------------------------------------------------------------------
+-- Таблицы для сырых данных (MergeTree)
+-- ----------------------------------------------------------------------------
+-- Хранят JSON "как есть" + метаданные Kafka
+-- Партиционируем по месяцу ingest_ts для эффективной очистки старых данных
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stg.browser_raw
 (
-    ingest_ts       DateTime64(3) DEFAULT now64(3),
-    kafka_topic     LowCardinality(String) DEFAULT '',
-    kafka_partition Int32 DEFAULT -1,
-    kafka_offset    Int64 DEFAULT -1,
-    kafka_ts        DateTime64(3) DEFAULT ingest_ts,
-    raw             String
+    ingest_ts       DateTime64(3) DEFAULT now64(3),     -- Время вставки в ClickHouse
+    kafka_topic     LowCardinality(String) DEFAULT '',  -- Топик Kafka
+    kafka_partition Int32 DEFAULT -1,                   -- Партиция
+    kafka_offset    Int64 DEFAULT -1,                   -- Смещение (гарантирует уникальность)
+    kafka_ts        DateTime64(3) DEFAULT ingest_ts,    -- Время из Kafka (если есть)
+    raw             String                              -- JSON как строка
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(ingest_ts)
@@ -53,16 +68,21 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(ingest_ts)
 ORDER BY (kafka_topic, kafka_partition, kafka_offset, ingest_ts);
 
--- Kafka source tables (ENGINE = Kafka)
+-- ----------------------------------------------------------------------------
+-- Таблицы-источники Kafka (ENGINE = Kafka)
+-- ----------------------------------------------------------------------------
+-- Читают данные из топиков Kafka в реальном времени
+-- Не хранят данные постоянно, а "потребляют" их при SELECT/MV
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stg.kafka_browser_raw (raw String)
 ENGINE = Kafka
 SETTINGS
-    kafka_broker_list = 'kafka:29092',
-    kafka_topic_list = 'browser_events',
-    kafka_group_name = 'ch_stg_browser',
-    kafka_format = 'JSONAsString',
-    kafka_num_consumers = 1,
-    kafka_handle_error_mode = 'stream';
+    kafka_broker_list = 'kafka:29092',      -- Адрес брокера (внутри Docker-сети)
+    kafka_topic_list = 'browser_events',    -- Имя топика
+    kafka_group_name = 'ch_stg_browser',    -- Группа консьюмеров (для контроля offset'ов)
+    kafka_format = 'JSONAsString',          -- Читаем весь JSON как строку
+    kafka_num_consumers = 1,                -- Количество консьюмеров (для параллелизма)
+    kafka_handle_error_mode = 'stream';     -- Ошибки не прерывают чтение
 
 CREATE TABLE IF NOT EXISTS stg.kafka_location_raw (raw String)
 ENGINE = Kafka
@@ -94,7 +114,12 @@ SETTINGS
     kafka_num_consumers = 1,
     kafka_handle_error_mode = 'stream';
 
+-- ----------------------------------------------------------------------------
 -- Materialized Views: Kafka → STG
+-- ----------------------------------------------------------------------------
+-- Автоматически перекладывают данные из Kafka-таблиц в MergeTree
+-- Работают в реальном времени: сообщение из Kafka → сразу в *_raw
+-- ----------------------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_kafka_browser_to_stg
 TO stg.browser_raw
 AS

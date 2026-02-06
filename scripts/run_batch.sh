@@ -1,27 +1,50 @@
 #!/usr/bin/env bash
+#
+# Скрипт batch-трансформации данных: ODS → DDS → DM
+#
+# Назначение:
+#   Запускает SQL-скрипты из jobs/ для преобразования данных между слоями:
+#   1. ODS → DDS : Сборка сущностей из типизированных данных
+#   2. DDS → DM  : Обновление сводки по качеству данных (dq_summary)
+#
+# Как запускать:
+#   make transform
+#   или: bash scripts/run_batch.sh
+#
+# Требования:
+#   - ClickHouse запущен (make up)
+#   - ODS содержит данные (make data выполнен)
+#
+# Стратегия:
+#   Сейчас: полная перезагрузка (TRUNCATE + INSERT) — для демо
+#   В продакшене: инкрементальная загрузка по watermark
+#
+
 set -euo pipefail
 
-# Run batch transformations: ODS → DDS → DM
-# Usage: make transform
-#        or: bash scripts/run_batch.sh
-
+# Директория со скриптом
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOBS_DIR="${SCRIPT_DIR}/../jobs"
 
+# Параметры подключения
 COMPOSE_BIN="${COMPOSE_BIN:-docker compose}"
 CLICKHOUSE_SERVICE="${CLICKHOUSE_SERVICE:-clickhouse}"
 CLICKHOUSE_DB="${CLICKHOUSE_DB:-default}"
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-123456}"
 
-# Check if clickhouse service is running
+# -----------------------------------------------------------------------------
+# Проверка: ClickHouse запущен?
+# -----------------------------------------------------------------------------
 if ! ${COMPOSE_BIN} ps | grep -q "${CLICKHOUSE_SERVICE}"; then
-    echo "Error: ClickHouse service '${CLICKHOUSE_SERVICE}' is not running."
-    echo "Run 'make up' first to start the services."
+    echo "Ошибка: Сервис '${CLICKHOUSE_SERVICE}' не запущен."
+    echo "Запустите сначала: make up"
     exit 1
 fi
 
-# Check if ODS has data
+# -----------------------------------------------------------------------------
+# Проверка: в ODS есть данные?
+# -----------------------------------------------------------------------------
 ODS_COUNT=$(${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
@@ -29,16 +52,21 @@ ODS_COUNT=$(${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --query="SELECT count() FROM ods.browser_event" 2>/dev/null || echo "0")
 
 if [[ "${ODS_COUNT}" == "0" ]]; then
-    echo "Warning: ODS.browser_event is empty."
-    echo "Run 'make data' first to load data into Kafka → STG → ODS."
+    echo "Предупреждение: Таблица ODS.browser_event пуста."
+    echo "Сначала загрузите данные: make data"
     exit 1
 fi
 
-echo "Found ${ODS_COUNT} rows in ODS.browser_event"
+echo "Найдено ${ODS_COUNT} строк в ODS.browser_event"
 echo ""
 
-# Step 1: Refresh DDS (truncate + reload for demo)
-echo "Step 1: Refreshing DDS layer (ODS → DDS)..."
+# -----------------------------------------------------------------------------
+# Шаг 1: ODS → DDS (сборка сущностей)
+# -----------------------------------------------------------------------------
+echo "Шаг 1: Обновление DDS слоя (ODS → DDS)..."
+echo "  - Очистка текущих данных (TRUNCATE)..."
+
+# Очищаем таблицы перед загрузкой (полная перезагрузка для демо)
 ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
@@ -50,51 +78,61 @@ ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --database="${CLICKHOUSE_DB}" \
     --query="TRUNCATE TABLE dds.event" 2>/dev/null || true
 
+echo "  - Загрузка dds.click (device + geo)..."
 ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
     --database="${CLICKHOUSE_DB}" \
     --multiquery < "${JOBS_DIR}/30_dds_refresh.sql"
 
-echo "  ✓ DDS refreshed"
+echo "  ✓ DDS обновлён"
 
-# Show DDS stats
+# Показываем статистику DDS
 echo ""
-echo "DDS statistics:"
+echo "Статистика DDS:"
 ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
     --database="${CLICKHOUSE_DB}" \
     --query="SELECT 'dds.click' AS table, count() AS rows FROM dds.click UNION ALL SELECT 'dds.event', count() FROM dds.event FORMAT PrettyCompact"
 
-# Step 2: Refresh DM (DQ summary)
+# -----------------------------------------------------------------------------
+# Шаг 2: DDS → DM (сводка по качеству)
+# -----------------------------------------------------------------------------
 echo ""
-echo "Step 2: Refreshing DM layer (DQ summary)..."
+echo "Шаг 2: Обновление DM слоя (DQ summary)..."
 ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
     --database="${CLICKHOUSE_DB}" \
     --multiquery < "${JOBS_DIR}/40_dm_refresh.sql"
 
-echo "  ✓ DM refreshed"
+echo "  ✓ DM обновлён"
 
-# Show DM stats
+# Показываем сводку по качеству
 echo ""
-echo "Data Quality summary:"
+echo "Сводка по качеству данных:"
 ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
     --database="${CLICKHOUSE_DB}" \
     --query="SELECT * FROM dm.dq_summary ORDER BY layer, table_name, check_name FORMAT PrettyCompact"
 
+# -----------------------------------------------------------------------------
+# Итог
+# -----------------------------------------------------------------------------
 echo ""
-echo "Batch transformation complete!"
+echo "========================================"
+echo "Batch-трансформация завершена!"
+echo "========================================"
 echo ""
-echo "Available data marts:"
-echo "  - dm.v_events_enriched    : Main enriched events view"
-echo "  - dm.v_daily_traffic      : Daily aggregation by dimensions"
-echo "  - dm.v_top_pages_daily    : Top pages by day"
-echo "  - dm.v_dq_errors_daily    : Data quality errors"
-echo "  - dm.v_session_overview   : Session-level metrics"
-echo "  - dm.v_utm_effectiveness  : UTM campaign performance"
-echo "  - dm.dq_summary           : Layer statistics"
+echo "Доступные витрины для анализа:"
+echo "  - dm.v_events_enriched    : Полное обогащение событий"
+echo "  - dm.v_daily_traffic      : Агрегация по дням"
+echo "  - dm.v_top_pages_daily    : Топ страниц"
+echo "  - dm.v_dq_errors_daily    : Ошибки качества"
+echo "  - dm.v_session_overview   : Обзор сессий"
+echo "  - dm.v_utm_effectiveness  : Эффективность UTM"
+echo "  - dm.dq_summary           : Статистика по слоям"
+echo ""
+echo "Подключитесь к Superset: http://localhost:8088"

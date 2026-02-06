@@ -1,41 +1,71 @@
--- ODS layer: typed data + deduplication + DQ
+-- ============================================================================
+-- Слой ODS (Operational Data Store) — типизированные данные + дедупликация + DQ
+-- ============================================================================
+-- Назначение:
+--   - Типизация данных из STG (String → UUID, DateTime, etc.)
+--   - Дедупликация через ReplacingMergeTree (последняя версия по src_ingest_ts)
+--   - Контроль качества: массив parse_errors для "грязных" данных
+--   - Разделение: валидные строки → основная таблица, ошибки → *_errors
+--
+-- Поток данных:
+--   STG (*_raw) → MV → ODS (основная таблица + error_tables)
+-- ============================================================================
 
--- Main ODS tables (valid keys only) + error tables (invalid keys)
+-- ============================================================================
+-- BROWSER EVENTS
+-- ============================================================================
 
--- ODS: browser_events
+-- ----------------------------------------------------------------------------
+-- Основная таблица: валидные строки (event_id IS NOT NULL)
+-- ----------------------------------------------------------------------------
+-- ReplacingMergeTree: при мердже оставляет строку с максимальным src_ingest_ts
+-- allow_nullable_key = 1: разрешаем NULL в ключе (ClickHouse по умолчанию запрещает)
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ods.browser_event
 (
-    event_id           Nullable(UUID),
-    event_ts           Nullable(DateTime64(6)),
-    event_date         Date MATERIALIZED ifNull(toDate(event_ts), toDate(src_ingest_ts)),
-    event_type         LowCardinality(Nullable(String)),
-    click_id           Nullable(UUID),
-    browser_name       LowCardinality(Nullable(String)),
-    browser_user_agent Nullable(String),
-    browser_language   LowCardinality(Nullable(String)),
-    src_ingest_ts      DateTime64(3),
-    src_raw            String,
-    parse_errors       Array(LowCardinality(String))
+    event_id           Nullable(UUID),                     -- UUID события (ключ)
+    event_ts           Nullable(DateTime64(6)),            -- Время события из JSON
+    event_date         Date MATERIALIZED ifNull(toDate(event_ts), toDate(src_ingest_ts)),  -- Партиция
+    event_type         LowCardinality(Nullable(String)),   -- Тип события (pageview, click и т.д.)
+    click_id           Nullable(UUID),                     -- Связь с click-контекстом
+    browser_name       LowCardinality(Nullable(String)),   -- Chrome, Firefox и т.д.
+    browser_user_agent Nullable(String),                   -- User-Agent строка
+    browser_language   LowCardinality(Nullable(String)),   -- Язык браузера
+    src_ingest_ts      DateTime64(3),                      -- Время загрузки в ODS (версия для ReplacingMergeTree)
+    src_raw            String,                             -- Исходный JSON для аудита
+    parse_errors       Array(LowCardinality(String))       -- Ошибки парсинга (если есть)
 )
-ENGINE = ReplacingMergeTree(src_ingest_ts)
-PARTITION BY toYYYYMM(event_date)
-ORDER BY (event_id)
-SETTINGS allow_nullable_key = 1;
+ENGINE = ReplacingMergeTree(src_ingest_ts)  -- Движок дедупликации по версии
+PARTITION BY toYYYYMM(event_date)           -- Партиции по месяцу для быстрой очистки
+ORDER BY (event_id)                         -- Ключ сортировки (и дедупликации)
+SETTINGS allow_nullable_key = 1;            -- Разрешаем NULL в ключе (для "битых" данных)
 
+-- ----------------------------------------------------------------------------
+-- Таблица ошибок: строки с невалидными ключами (event_id IS NULL)
+-- ----------------------------------------------------------------------------
+-- Сохраняем полную информацию для анализа проблем с данными
+-- MergeTree без Replacing: сохраняем все ошибки (не дедуплицируем)
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ods.browser_event_errors
 (
-    ingest_ts       DateTime64(3),
-    kafka_topic     LowCardinality(String),
-    kafka_partition Int32,
-    kafka_offset    Int64,
-    kafka_ts        DateTime64(3),
-    raw             String,
-    error_reason    LowCardinality(String)
+    ingest_ts       DateTime64(3),            -- Время вставки в ClickHouse
+    kafka_topic     LowCardinality(String),   -- Топик Kafka (для отслеживания источника)
+    kafka_partition Int32,                    -- Партиция Kafka
+    kafka_offset    Int64,                    -- Смещение Kafka (уникальный идентификатор сообщения)
+    kafka_ts        DateTime64(3),            -- Время из Kafka
+    raw             String,                   -- Исходный JSON
+    error_reason    LowCardinality(String)    -- Описание ошибки (что именно не распарсилось)
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(ingest_ts)
 ORDER BY (ingest_ts, kafka_topic, kafka_partition, kafka_offset);
 
+-- ----------------------------------------------------------------------------
+-- MV: STG → ODS (основная таблица)
+-- ----------------------------------------------------------------------------
+-- Фильтруем только валидные строки: WHERE event_id IS NOT NULL
+-- Парсим JSON, типизируем поля, собираем ошибки в массив parse_errors
+-- ----------------------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_browser_raw_to_ods
 TO ods.browser_event
 AS
@@ -57,14 +87,21 @@ SELECT
     browser_language,
     ingest_ts AS src_ingest_ts,
     raw AS src_raw,
+    -- Собираем ошибки парсинга в массив (пустые строки фильтруем)
     arrayFilter(x -> x != '', [
         if(event_id IS NULL, 'bad_event_id', ''),
         if(event_ts IS NULL, 'bad_event_timestamp', ''),
         if(click_id IS NULL, 'bad_click_id', '')
     ]) AS parse_errors
 FROM stg.browser_raw
-WHERE event_id IS NOT NULL;  -- Filter NULL keys to error table
+WHERE event_id IS NOT NULL;  -- Только валидные строки (NULL → в error_tables)
 
+-- ----------------------------------------------------------------------------
+-- MV: STG → ODS (таблица ошибок)
+-- ----------------------------------------------------------------------------
+-- Перенаправляем строки с ошибками парсинга в отдельную таблицу
+-- Это позволяет не терять данные и анализировать проблемы
+-- ----------------------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS stg.mv_browser_raw_to_ods_errors
 TO ods.browser_event_errors
 AS
@@ -86,31 +123,34 @@ SELECT
     raw,
     arrayStringConcat(parse_errors, ',') AS error_reason
 FROM stg.browser_raw
-WHERE length(parse_errors) > 0
+WHERE length(parse_errors) > 0           -- Есть хотя бы одна ошибка
     AND (
         event_id IS NULL
         OR event_ts IS NULL
         OR click_id IS NULL
     );
 
--- ODS: location_events
+-- ============================================================================
+-- LOCATION EVENTS
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS ods.location_event
 (
     event_id       Nullable(UUID),
-    page_url       Nullable(String),
-    page_url_path  LowCardinality(Nullable(String)),
-    referer_url    Nullable(String),
-    referer_medium LowCardinality(Nullable(String)),
-    utm_medium     LowCardinality(Nullable(String)),
-    utm_source     LowCardinality(Nullable(String)),
-    utm_content    LowCardinality(Nullable(String)),
-    utm_campaign   LowCardinality(Nullable(String)),
+    page_url       Nullable(String),              -- Полный URL страницы
+    page_url_path  LowCardinality(Nullable(String)),  -- Путь (/home, /product и т.д.)
+    referer_url    Nullable(String),              -- Откуда пришёл пользователь
+    referer_medium LowCardinality(Nullable(String)),  -- Тип referer (internal, search и т.д.)
+    utm_medium     LowCardinality(Nullable(String)),  -- UTM medium (cpc, organic и т.д.)
+    utm_source     LowCardinality(Nullable(String)),  -- UTM source (google, mailchimp и т.д.)
+    utm_content    LowCardinality(Nullable(String)),  -- UTM content (ad_1, ad_2 и т.д.)
+    utm_campaign   LowCardinality(Nullable(String)),  -- UTM campaign (campaign_1 и т.д.)
     src_ingest_ts  DateTime64(3),
     src_raw        String,
     parse_errors   Array(LowCardinality(String))
 )
 ENGINE = ReplacingMergeTree(src_ingest_ts)
-PARTITION BY toYYYYMM(toDate(src_ingest_ts))
+PARTITION BY toYYYYMM(toDate(src_ingest_ts))  -- Партиция по времени загрузки (нет event_date)
 ORDER BY (event_id)
 SETTINGS allow_nullable_key = 1;
 
@@ -171,17 +211,20 @@ FROM stg.location_raw
 WHERE length(parse_errors) > 0
     AND event_id IS NULL;
 
--- ODS: device_events
+-- ============================================================================
+-- DEVICE EVENTS
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS ods.device_by_click
 (
     click_id         Nullable(UUID),
-    os               Nullable(String),
-    os_name          LowCardinality(Nullable(String)),
-    os_timezone      LowCardinality(Nullable(String)),
-    device_type      LowCardinality(Nullable(String)),
-    device_is_mobile Nullable(UInt8),
-    user_custom_id   Nullable(String),
-    user_domain_id   Nullable(UUID),
+    os               Nullable(String),              -- Полное название ОС
+    os_name          LowCardinality(Nullable(String)),  -- Короткое название (Windows, iOS и т.д.)
+    os_timezone      LowCardinality(Nullable(String)),  -- Таймзона пользователя
+    device_type      LowCardinality(Nullable(String)),  -- Mobile, Computer, Tablet
+    device_is_mobile Nullable(UInt8),                 -- 1 = мобильное, 0 = десктоп
+    user_custom_id   Nullable(String),               -- Email или username
+    user_domain_id   Nullable(UUID),                 -- UUID пользователя в системе
     src_ingest_ts    DateTime64(3),
     src_raw          String,
     parse_errors     Array(LowCardinality(String))
@@ -255,16 +298,19 @@ WHERE length(parse_errors) > 0
         OR user_domain_id IS NULL
     );
 
--- ODS: geo_events
+-- ============================================================================
+-- GEO EVENTS
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS ods.geo_by_click
 (
     click_id        Nullable(UUID),
-    geo_latitude    Nullable(Float64),
-    geo_longitude   Nullable(Float64),
-    geo_country     LowCardinality(Nullable(String)),
-    geo_timezone    LowCardinality(Nullable(String)),
-    geo_region_name Nullable(String),
-    ip_address      Nullable(String),
+    geo_latitude    Nullable(Float64),              -- Широта
+    geo_longitude   Nullable(Float64),              -- Долгота
+    geo_country     LowCardinality(Nullable(String)),  -- Код страны (RU, US и т.д.)
+    geo_timezone    LowCardinality(Nullable(String)),  -- Таймзона
+    geo_region_name Nullable(String),               -- Название региона/города
+    ip_address      Nullable(String),               -- IP адрес
     src_ingest_ts   DateTime64(3),
     src_raw         String,
     parse_errors    Array(LowCardinality(String))
