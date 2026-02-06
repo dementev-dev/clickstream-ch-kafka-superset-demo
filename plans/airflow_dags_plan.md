@@ -1,271 +1,186 @@
-# План миграции ETL-оркестрации на Airflow
+# План развития Airflow DAG'ов
 
 ## Цель
-Заменить `make`-команды на полноценную оркестрацию через Airflow DAGs с сохранением логики пайплайна STG → ODS → DDS → DM.
+Перевести оркестрацию ETL на Airflow так, чтобы пайплайн оставался устойчивым к "грязным" данным и соответствовал текущей цели проекта: Kafka → ClickHouse (STG → ODS → DDS → DM) → витрины для BI.
 
----
+## Что важно учесть в текущем репозитории
+- В `AGENTS.md` как quick check ожидается DAG `etl_pipeline`.
+- В Airflow-контейнере сейчас нет Kafka CLI, поэтому `kafka-topics.sh` и `kafka-console-producer.sh` из `BashOperator` использовать нельзя без донастройки образа.
+- DDL должен выполняться строго последовательно: `00 -> 10 -> 20 -> 30 -> 40`.
+- Файл `jobs/30_dds_refresh.sql` уже включает обе загрузки (`dds.click` и `dds.event`), поэтому в MVP это одна task.
 
-## Архитектура потока данных (напоминание)
+## Архитектура оркестрации
+### DAG 1 (обязательный): `ddl_init`
+- `schedule`: `None` (только ручной запуск).
+- `catchup`: `False`.
+- `max_active_runs`: `1`.
+- `is_paused_upon_creation`: `True`.
+- `tags`: `["ddl", "bootstrap", "clickhouse"]`.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  Источник: data/*.jsonl → Kafka → STG (Kafka Engine) → ODS (MV)            │
-│                                                                             │
-│  STG → ODS: real-time через Materialized Views (не требует оркестрации)    │
-│  ODS → DDS: batch через SQL (argMax + JOIN) — требует оркестрации          │
-│  DDS → DM:  batch через SQL (TRUNCATE + INSERT) — требует оркестрации      │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+### DAG 2 (обязательный): `etl_pipeline`
+- `schedule`: `None` (ручной запуск для демо).
+- `catchup`: `False`.
+- `max_active_runs`: `1`.
+- `tags`: `["etl", "clickhouse", "kafka", "demo"]`.
 
----
+### DAG 3 (опциональный): `dq_monitor`
+- `schedule`: `0 * * * *`.
+- `catchup`: `False`.
+- `tags`: `["dq", "monitoring"]`.
 
-## Структура DAG'ов
+## Дизайн DAG `ddl_init`
+### Params
+- `verify_only`: bool, default `false` (прогон только проверок без применения DDL).
 
-### 1. `ddl_init` — Инициализация схемы БД
+### Tasks
+| Task ID | Что делает | Источник SQL/реализация |
+|---------|------------|--------------------------|
+| `check_clickhouse` | Проверка доступности CH (`SELECT 1`) | `PythonOperator` + `clickhouse-connect` |
+| `ddl_00_databases` | Создание БД | `ddl/00_databases.sql` |
+| `ddl_10_stg` | STG + Kafka Engine + MV | `ddl/10_stg.sql` |
+| `ddl_20_ods` | ODS + MV STG→ODS + *_errors | `ddl/20_ods.sql` |
+| `ddl_30_dds` | Таблицы DDS | `ddl/30_dds.sql` |
+| `ddl_40_dm` | VIEW витрины DM | `ddl/40_dm.sql` |
+| `verify_schema` | Проверка ключевых таблиц/VIEW | SQL-check |
 
-**Назначение:** Создание всех объектов ClickHouse (базы, таблицы, MV, витрины).
-
-**Параметры:**
-- `schedule`: `None` (только ручной запуск)
-- `tags`: `["ddl", "init", "clickhouse"]`
-
-**Задачи (Tasks):**
-
-| Task ID | Описание | Тип оператора |
-|---------|----------|---------------|
-| `check_clickhouse` | Проверка доступности ClickHouse | `BashOperator` — `clickhouse-client --query="SELECT 1"` |
-| `create_databases` | Создание БД: stg, ods, dds, dm | `SQLExecuteQueryOperator` — `ddl/00_databases.sql` |
-| `create_stg` | Таблицы STG + Kafka Engine + MV | `SQLExecuteQueryOperator` — `ddl/10_stg.sql` |
-| `create_ods` | Таблицы ODS + MV STG→ODS | `SQLExecuteQueryOperator` — `ddl/20_ods.sql` |
-| `create_dds` | Таблицы DDS (batch-загрузка) | `SQLExecuteQueryOperator` — `ddl/30_dds.sql` |
-| `create_dm` | Витрины DM (VIEW) | `SQLExecuteQueryOperator` — `ddl/40_dm.sql` |
-| `verify_schema` | Проверка: список созданных таблиц | `BashOperator` — запрос `SHOW TABLES FROM each DB` |
-
-**Зависимости:**
-```
-check_clickhouse >> create_databases >> [create_stg, create_ods, create_dds, create_dm] >> verify_schema
-```
-
-**Замечание:** Порядок важен — сначала `stg`+`ods` (MV работают сразу), потом `dds`+`dm`.
-
----
-
-### 2. `kafka_load` — Загрузка данных в Kafka
-
-**Назначение:** Загрузка JSON-данных из `data/*.jsonl` в Kafka-топики.
-
-**Параметры:**
-- `schedule`: `None` (только ручной запуск)
-- `tags`: `["kafka", "ingest", "demo"]`
-- `params`:
-  - `limit`: int — количество строк для загрузки (default: 50, 0 = все)
-  - `full_load`: bool — загрузить полные файлы
-  - `reset_topics`: bool — пересоздать топики (default: true)
-
-**Задачи (Tasks):**
-
-| Task ID | Описание | Тип оператора |
-|---------|----------|---------------|
-| `check_kafka` | Проверка доступности Kafka | `BashOperator` — `kafka-topics.sh --list` |
-| `reset_topics` | Удаление/создание топиков (conditional) | `BashOperator` — `kafka-topics.sh --delete/--create` |
-| `load_browser` | Загрузка browser_events.jsonl | `BashOperator` — `kafka-console-producer.sh` |
-| `load_location` | Загрузка location_events.jsonl | `BashOperator` — `kafka-console-producer.sh` |
-| `load_device` | Загрузка device_events.jsonl | `BashOperator` — `kafka-console-producer.sh` |
-| `load_geo` | Загрузка geo_events.jsonl | `BashOperator` — `kafka-console-producer.sh` |
-| `verify_load` | Проверка: количество сообщений в топиках | `BashOperator` — `kafka-console-consumer.sh --from-beginning` или проверка через CH |
-
-**Зависимости:**
-```
-check_kafka >> reset_topics >> [load_browser, load_location, load_device, load_geo] >> verify_load
+Зависимости:
+```text
+check_clickhouse >> ddl_00_databases >> ddl_10_stg >> ddl_20_ods >> ddl_30_dds >> ddl_40_dm >> verify_schema
 ```
 
-**Особенности:**
-- Загрузка файлов может идти параллельно (независимые топики).
-- `head -n {{ params.limit }}` для среза данных.
+Примечание:
+- DDL DAG запускается вручную: при первом bootstrap, при изменении схемы, после `docker compose down -v`.
 
----
+## Дизайн DAG `etl_pipeline`
+### Params (через Trigger DAG with config)
+- `run_ingest`: bool, default `true`.
+- `limit`: int, default `50`.
+- `full_load`: bool, default `false`.
+- `reset_topics`: bool, default `true`.
+- `full_refresh`: bool, default `true`.
 
-### 3. `etl_batch_transform` — Batch-трансформация ODS → DDS → DM
+### TaskGroup `precheck`
+| Task ID | Что делает | Реализация |
+|---------|------------|------------|
+| `check_clickhouse` | Проверка доступности CH (`SELECT 1`) | `PythonOperator` + `clickhouse-connect` |
+| `check_schema_ready` | Проверка, что DDL уже применён (наличие `stg.browser_raw`, `ods.browser_event`, `dds.event`, `dm.v_events_enriched`) | SQL-check, fail fast |
+| `check_input_files` | Проверка наличия `data/*_events.jsonl` | `PythonOperator` |
 
-**Назначение:** Основной ETL-пайплайн — сборка сущностей и обновление витрин.
+### TaskGroup `ingest` (выполняется только при `run_ingest=true`)
+| Task ID | Что делает | Реализация |
+|---------|------------|------------|
+| `kafka_prepare_topics` | reset/create топиков по параметру `reset_topics` | `PythonOperator` + `kafka-python` AdminClient |
+| `load_browser` | Публикация строк из `browser_events.jsonl` | `PythonOperator` + `KafkaProducer` |
+| `load_location` | Публикация строк из `location_events.jsonl` | `PythonOperator` + `KafkaProducer` |
+| `load_device` | Публикация строк из `device_events.jsonl` | `PythonOperator` + `KafkaProducer` |
+| `load_geo` | Публикация строк из `geo_events.jsonl` | `PythonOperator` + `KafkaProducer` |
+| `wait_for_stg_data` | Ожидание появления данных в `stg.*_raw` | `PythonSensor`/poll SQL |
 
-**Параметры:**
-- `schedule`: `"@once"` для демо или `"*/15 * * * *"` (каждые 15 мин)
-- `tags`: `["etl", "batch", "dds", "dm"]`
-- `params`:
-  - `full_refresh`: bool — полная перезагрузка или инкремент (default: true для демо)
-
-**Задачи (Tasks):**
-
-| Task ID | Описание | Тип оператора |
-|---------|----------|---------------|
-| `wait_for_ods` | Ожидание появления данных в ODS | `BashOperator` — `SELECT count() FROM ods.browser_event` |
-| `check_ods_quality` | Проверка качества ODS: ошибки парсинга | `SQLExecuteQueryOperator` — `SELECT layer, count() FROM ods.browser_event WHERE ...` |
-| `truncate_dds` | Очистка DDS таблиц (conditional) | `SQLExecuteQueryOperator` — `TRUNCATE TABLE dds.click, dds.event` |
-| `refresh_dds_click` | Загрузка dds.click (device + geo) | `SQLExecuteQueryOperator` — `jobs/30_dds_refresh.sql` (часть для click) |
-| `refresh_dds_event` | Загрузка dds.event (browser + location) | `SQLExecuteQueryOperator` — `jobs/30_dds_refresh.sql` (часть для event) |
-| `check_dds_integrity` | Проверка: orphan events (есть event, нет click) | `SQLExecuteQueryOperator` — `SELECT count() FROM dds.event WHERE click_id NOT IN (...)` |
-| `refresh_dm_summary` | Обновление dm.dq_summary | `SQLExecuteQueryOperator` — `jobs/40_dm_refresh.sql` |
-| `validate_dm` | Проверка: dq_summary не пустая | `BashOperator` — `SELECT * FROM dm.dq_summary` |
-
-**Зависимости:**
-```
-wait_for_ods >> check_ods_quality >> truncate_dds >> [refresh_dds_click, refresh_dds_event] >> check_dds_integrity >> refresh_dm_summary >> validate_dm
-```
-
-**Особенности:**
-- `refresh_dds_click` и `refresh_dds_event` независимы — можно параллельно.
-- Для инкрементальной загрузки (в будущем) понадобится watermark (src_ingest_ts).
-
----
-
-### 4. `data_quality_monitor` — Мониторинг качества данных (опциональный)
-
-**Назначение:** Регулярная проверка DQ-метрик и алерты.
-
-**Параметры:**
-- `schedule`: `"0 */1 * * *"` (каждый час)
-- `tags`: `["dq", "monitoring", "alerts"]`
-
-**Задачи (Tasks):**
-
-| Task ID | Описание | Тип оператора |
-|---------|----------|---------------|
-| `check_stg_volume` | Проверка объёма STG | `SQLExecuteQueryOperator` |
-| `check_ods_errors` | Проверка ошибок парсинга ODS | `SQLExecuteQueryOperator` — `SELECT count() FROM ods.*_errors` |
-| `check_dds_orphans` | Проверка сиротских записей | `SQLExecuteQueryOperator` |
-| `send_alert` | Отправка алерта (если проблемы) | `EmptyOperator` или callback |
-
-**Зависимости:** Линейная цепочка с условными переходами.
-
----
-
-## Технические детали реализации
-
-### Подключение к ClickHouse
-
-```python
-# Connection в Airflow UI (Admin → Connections)
-conn_id = "clickhouse_default"
-conn_type = "generic"
-host = "clickhouse"
-port = 8123  # HTTP interface
-login = "default"
-password = "123456"
+Зависимости:
+```text
+kafka_prepare_topics >> [load_browser, load_location, load_device, load_geo] >> wait_for_stg_data
 ```
 
-### SQL-операторы
+Примечание:
+- Для демо соблюдать ограничение на малый срез данных: `limit=20..50` по умолчанию.
 
-Для выполнения SQL использовать `SQLExecuteQueryOperator` с `clickhouse-connect`:
+### TaskGroup `transform`
+| Task ID | Что делает | Источник SQL |
+|---------|------------|--------------|
+| `wait_for_ods_data` | Ожидание строк в `ods.browser_event` | SQL-check |
+| `check_ods_quality` | Базовые DQ-метрики ODS (ошибки/total) | SQL-check |
+| `truncate_dds_click` | Очистка `dds.click` при `full_refresh=true` | inline SQL |
+| `truncate_dds_event` | Очистка `dds.event` при `full_refresh=true` | inline SQL |
+| `refresh_dds` | ODS → DDS | `jobs/30_dds_refresh.sql` |
+| `check_dds_integrity` | Проверка orphan событий | inline SQL |
+| `refresh_dm_summary` | DDS → DM DQ summary | `jobs/40_dm_refresh.sql` |
+| `validate_dm_summary` | Проверка, что `dm.dq_summary` не пуста | SQL-check |
 
-```python
-from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
-
-refresh_dds = SQLExecuteQueryOperator(
-    task_id="refresh_dds_click",
-    conn_id="clickhouse_default",
-    sql="""
-        INSERT INTO dds.click
-        SELECT ...  -- SQL из jobs/30_dds_refresh.sql
-    """
-)
+Зависимости:
+```text
+wait_for_ods_data >> check_ods_quality >> [truncate_dds_click, truncate_dds_event] >> refresh_dds >> check_dds_integrity >> refresh_dm_summary >> validate_dm_summary
 ```
 
-### Bash-операторы для Kafka
-
-```python
-from airflow.operators.bash import BashOperator
-
-load_browser = BashOperator(
-    task_id="load_browser",
-    bash_command="""
-        head -n {{ params.limit }} /opt/airflow/data/browser_events.jsonl | \
-        kafka-console-producer.sh --bootstrap-server kafka:29092 --topic browser_events
-    """
-)
+### Итоговая цепочка `etl_pipeline`
+```text
+precheck >> ingest(optional) >> transform
 ```
 
-### Сенсоры (Sensors)
+## Техническая реализация (приземленно)
+### ClickHouse в Airflow
+- Использовать `clickhouse-connect` напрямую в Python helper, а не `SQLExecuteQueryOperator`.
+- Брать параметры подключения из `conn_id = clickhouse_default` через `BaseHook.get_connection`.
 
-Для ожидания данных использовать `SqlSensor`:
+### Kafka в Airflow
+- Добавить зависимость `kafka-python` в `airflow/requirements.txt`.
+- Использовать Python-код для:
+  - reset/create топиков;
+  - публикации строк из `.jsonl` (1 строка = 1 message value).
 
-```python
-from airflow.providers.common.sql.sensors.sql import SqlSensor
+### Общие helper-функции
+- `dags/utils/clickhouse_helpers.py`:
+  - `execute_sql(sql: str) -> None`
+  - `execute_sql_file(path: str) -> None`
+  - `fetch_one(sql: str) -> tuple`
+- `dags/utils/kafka_helpers.py`:
+  - `prepare_topics(reset: bool) -> None`
+  - `load_jsonl(file_path: str, topic: str, limit: int, full_load: bool) -> int`
 
-wait_for_ods = SqlSensor(
-    task_id="wait_for_ods",
-    conn_id="clickhouse_default",
-    sql="SELECT count() > 0 FROM ods.browser_event",
-    mode="poke",
-    poke_interval=30,
-    timeout=600
-)
-```
-
----
-
-## Последовательность внедрения
-
-1. **Этап 1: DDL и Batch**
-   - Создать `ddl_init` DAG
-   - Создать `etl_batch_transform` DAG
-   - Проверить полный цикл: DDL → load (ручной) → transform
-
-2. **Этап 2: Kafka Load**
-   - Создать `kafka_load` DAG с параметрами
-   - Интегрировать с `etl_batch_transform` через TriggerDagRunOperator
-
-3. **Этап 3: Мониторинг**
-   - Добавить `data_quality_monitor` DAG
-   - Настроить алерты (email/Slack)
-
----
-
-## Файловая структура
-
-```
+## Структура файлов
+```text
 dags/
 ├── __init__.py
-├── ddl_init.py              # DAG #1: Инициализация схемы
-├── kafka_load.py            # DAG #2: Загрузка в Kafka
-├── etl_batch_transform.py   # DAG #3: Batch ETL
-├── data_quality_monitor.py  # DAG #4: DQ мониторинг (опционально)
-├── utils/
-│   ├── __init__.py
-│   ├── clickhouse_helpers.py  # Общие функции для CH
-│   └── kafka_helpers.py       # Общие функции для Kafka
-└── sql/                     # SQL-шаблоны (опционально)
-    ├── dds_click_insert.sql
-    ├── dds_event_insert.sql
-    └── dm_summary_insert.sql
+├── ddl_init_dag.py           # отдельный DAG для DDL (обязателен)
+├── etl_pipeline_dag.py       # основной ETL DAG (обязателен)
+├── dq_monitor_dag.py         # опциональный DAG мониторинга
+└── utils/
+    ├── __init__.py
+    ├── clickhouse_helpers.py
+    └── kafka_helpers.py
 ```
 
----
+## Этапы внедрения
+1. Этап 1 (MVP, обязательно):
+   - Реализовать `ddl_init` и `etl_pipeline`.
+   - В `etl_pipeline` оставить `precheck + transform`, ingest пока выполнять внешней командой `make data`.
+   - Проверить путь: `ddl_init` -> ODS -> DDS -> DM после ручной загрузки в Kafka.
+2. Этап 2:
+   - Добавить в `etl_pipeline` ingest внутри DAG через `kafka-python`.
+   - Добавить ветвление `run_ingest=false` для сценария "только transform".
+3. Этап 3:
+   - Добавить `dq_monitor` и alert callback (email/Slack/webhook).
 
-## Особенности и ограничения
+## Критерии готовности
+- В Airflow UI видны DAG `ddl_init` и `etl_pipeline`.
+- `etl_pipeline` падает с понятной ошибкой, если схема не применена.
+- Ручной запуск DAG с `limit=50` завершает pipeline без падений.
+- После прогона:
+  - в `ods.browser_event` есть строки;
+  - в `dds.click` и `dds.event` есть строки;
+  - `dm.dq_summary` заполнена.
+- При повторном запуске с `full_refresh=true` нет неконтролируемых дублей в DDS.
 
-1. **STG → ODS:** Работает через MV автоматически, не требует DAG.
-2. **Очистка Kafka:** MV в ClickHouse запоминают offset'ы — для чистого старта нужно пересоздать MV.
-3. **Полная перезагрузка:** Для демо используем `TRUNCATE + INSERT`. В продакшене — инкремент.
-4. **Зависимости сервисов:** DAG'и должны проверять доступность ClickHouse/Kafka перед работой.
-5. **Идемпотентность:** Batch-задачи должны быть идемпотентны (TRUNCATE перед INSERT).
-
----
-
-## Проверка после реализации
-
+## Минимальные smoke-checks
 ```bash
-# 1. Запуск Airflow
-docker compose up -d airflow
+# 1) Запуск инфраструктуры
+make up
 
-# 2. В UI должны появиться DAG'и: ddl_init, kafka_load, etl_batch_transform
+# 2) Открыть Airflow UI
+# http://localhost:8080 (admin/admin)
 
-# 3. Тестовый прогон:
-#    - Trigger ddl_init → проверить таблицы в CH
-#    - Trigger kafka_load (limit=50) → проверить топики
-#    - Дождаться появления данных в ODS (автоматически через MV)
-#    - Trigger etl_batch_transform → проверить DDS и DM
+# 3) Один раз запустить ddl_init
+# Trigger DAG ddl_init (без config или {"verify_only": false})
 
-# 4. Проверка результатов:
-docker compose exec clickhouse clickhouse-client -q "SELECT * FROM dm.dq_summary"
+# 4) Trigger DAG etl_pipeline с config:
+# {"run_ingest": true, "limit": 50, "full_load": false, "reset_topics": true, "full_refresh": true}
+
+# 5) Проверка результатов
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM ods.browser_event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dds.click"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dds.event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dm.dq_summary"
 ```
+
+## Следующий шаг после MVP
+- Для ускорения можно разделить `jobs/30_dds_refresh.sql` на два файла и распараллелить `refresh_dds_click` и `refresh_dds_event` в DAG.
+- Для продакшн-режима перейти с `full_refresh` на watermark-инкремент.
