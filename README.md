@@ -4,54 +4,62 @@
 [![Layers](https://img.shields.io/badge/layers-STG%20→%20ODS%20→%20DDS%20→%20DM-green)](./docs/ARCHITECTURE.md)
 [![License](https://img.shields.io/badge/license-Educational-orange)]()
 
-Многослойное хранилище данных (STG → ODS → DDS → DM) для анализа кликстрима e-commerce. 
+Мини-демо для решения задания [DE-task.md](./data/DE-task.md): развернуть инфраструктуру на своей машине, прогнать кликстрим через Kafka в ClickHouse, сделать регулярный расчёт в Airflow и подготовить витрины под дашборд.
 
-Данные поступают из Kafka, проходят типизацию и обогащение, формируя витрины для BI-аналитики.
+Фокус проекта: быстро показать работающий end-to-end сценарий и понятным языком объяснить, как устроены слои и почему пайплайн не падает на "грязных" данных.
 
-> **Соответствие заданию:** Реализован полный цикл Data Engineering: ingestion → хранилище со слоями → регулярный процесс трансформации → витрины для дашборда.
+Коротко про поток:
+`data/*.jsonl` -> Kafka (1 строка = 1 сообщение) -> ClickHouse `stg` (сырые JSON) -> `ods` (типизация + DQ) -> Airflow batch -> `dds` (сущности) -> `dm` (витрины VIEW) -> Superset.
 
 ---
 
-## 🚀 Быстрый старт
+## Быстрый старт (демо-сценарий)
 
 ```bash
-# 1. Поднять инфраструктуру (Kafka + ClickHouse + Superset)
+# 1) Поднять инфраструктуру
 make up
 
-# 2. Создать структуру БД
-make ddl
-
-# 3. Загрузить данные (автоматически потекут STG → ODS)
-make data           # первые 50 строк
-# или: FULL=1 make data   # полный датасет (1000 строк)
-
-# 4. Подождать 5-10 сек (данные проходят через Kafka)
-sleep 10
-
-# 5. Запустить batch-трансформацию (ODS → DDS → DM)
-make transform
+# Проверить статусы контейнеров
+docker compose ps
 ```
 
-**Проверка:**
-```bash
-# Статистика по слоям
-docker compose exec clickhouse clickhouse-client \
-  --user=default --password=123456 --query="
-    SELECT database, countDistinct(table) AS tables, sum(rows) AS rows
-    FROM system.parts WHERE database IN ('stg','ods','dds','dm')
-    GROUP BY database ORDER BY database
-"
+Дальше основной путь идёт через Airflow (как в задании).
 
-# Пример запроса к витрине
-docker compose exec clickhouse clickhouse-client \
-  --user=default --password=123456 --query="
-    SELECT * FROM dm.v_utm_effectiveness ORDER BY clicks DESC LIMIT 5
-"
+1. Открыть Airflow UI: `http://localhost:8080` (admin/admin)
+2. Включить (unpause) и запустить `ddl_init` (создаёт базы/таблицы/VIEW в ClickHouse)
+
+Опционально можно триггернуть DAG из CLI (удобно для CI/скрипта):
+```bash
+docker compose exec -T airflow-webserver airflow dags trigger ddl_init
+```
+
+Загрузка небольшого среза данных в Kafka:
+```bash
+make data            # по умолчанию первые 50 строк
+# или: FULL=1 make data    # полный датасет (1000 строк)
+```
+
+Запуск batch-трансформации (ODS -> DDS -> DM) в Airflow (если DAG выключен, сначала unpause):
+```bash
+docker compose exec -T airflow-webserver airflow dags trigger etl_pipeline \
+  --conf '{"full_refresh": true}'
+```
+
+Smoke-check результата в ClickHouse:
+```bash
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query \
+  "SELECT 'ods.browser_event' AS t, count() AS rows FROM ods.browser_event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query \
+  "SELECT 'dds.click' AS t, count() AS rows FROM dds.click"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query \
+  "SELECT 'dds.event' AS t, count() AS rows FROM dds.event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query \
+  "SELECT 'dm.dq_summary' AS t, count() AS rows FROM dm.dq_summary"
 ```
 
 ---
 
-## 📊 Доступные сервисы
+## Доступные сервисы
 
 | Сервис | URL | Назначение |
 |--------|-----|------------|
@@ -64,47 +72,43 @@ docker compose exec clickhouse clickhouse-client \
 
 ---
 
-## 🏗️ Архитектура
+## Архитектура (в двух словах)
 
 ```mermaid
 flowchart TB
-    subgraph Sources["📁 JSON файлы"]
+    subgraph Sources["JSONL файлы"]
         BE[browser_events.jsonl]
         LE[location_events.jsonl]
         DE[device_events.jsonl]
         GE[geo_events.jsonl]
     end
 
-    subgraph Kafka["🚀 Kafka"]
+    subgraph Kafka["Kafka"]
         KT[Топики]
     end
 
-    subgraph CH["🗄️ ClickHouse"]
-        STG["STG — сырые JSON"]
-        ODS["ODS — типизированные"]
-        DDS["DDS — сущности"]
-        DM["DM — витрины"]
+    subgraph CH["ClickHouse"]
+        STG["stg: сырьё + Kafka MV"]
+        ODS["ods: типизация + DQ"]
+        DDS["dds: сущности"]
+        DM["dm: витрины (VIEW)"]
     end
 
-    subgraph Airflow["⚙️ Airflow"]
-        DAG[ETL DAGs]
+    subgraph Airflow["Airflow"]
+        DAG[DAG: ddl_init / etl_pipeline]
     end
 
     Sources -->|make data| Kafka -->|MV| STG -->|MV| ODS -->|Batch SQL| DDS -->|VIEW| DM
     DAG -.->|оркестрация| ODS & DDS & DM
 ```
 
-**Поток данных:**
-1. **STG** — сырые JSON из Kafka (MergeTree)
-2. **ODS** — типизированные данные + DQ (ReplacingMergeTree)
-3. **DDS** — собранные сущности event + click (Batch SQL)
-4. **DM** — витрины для BI (VIEW)
+Особенность задания про "грязные данные": парсинг не валит pipeline, ошибки фиксируются в `ods.*_errors` и в поле `parse_errors`.
 
 [Подробное описание архитектуры →](./docs/ARCHITECTURE.md)
 
 ---
 
-## 📁 Структура проекта
+## Структура проекта
 
 ```
 .
@@ -130,22 +134,24 @@ flowchart TB
 
 ---
 
-## 🛠️ Команды Makefile
+## Команды Makefile
 
 | Команда | Описание |
 |---------|----------|
 | `make up` | Поднять инфраструктуру |
-| `make ddl` | Создать структуру БД |
+| `make ddl` | Применить DDL в ClickHouse (вне Airflow) |
 | `make data` | Загрузить данные в Kafka (50 строк) |
 | `FULL=1 make data` | Загрузить полный датасет |
-| `make transform` | Запустить batch-процесс |
+| `make transform` | Запустить batch-процесс (вне Airflow) |
 
-> Примечание: данные ClickHouse теперь сохраняются в Docker volume `clickhouse-data`.  
-> `docker compose down` сохраняет данные, `docker compose down -v` удаляет все volume (включая ClickHouse).
+Примечания про сохранность данных:
+- Данные ClickHouse сохраняются в Docker volume `clickhouse-data`.
+- Данные Kafka сохраняются в Docker volume `kafka-data`.
+- `docker compose down` сохраняет named volumes, `docker compose down -v` удаляет их (и данные пропадут).
 
 ---
 
-## 🔗 Ключи данных
+## Ключи данных (как джойним)
 
 ```mermaid
 flowchart LR
@@ -181,41 +187,46 @@ flowchart LR
 
 ---
 
-## 📚 Документация
+## Дашборд в Superset (опционально, но полезно)
+
+1. Открыть `http://localhost:8088`
+2. Database -> Add:
+   - URI: `clickhouse+connect://default:123456@clickhouse:8123/default`
+3. Создать datasets из `dm.v_*` (VIEW) и собрать несколько графиков
+
+Идеи графиков под задание:
+- Трафик по дням: `dm.v_daily_traffic` (events, uniq_users)
+- Эффективность UTM: `dm.v_utm_effectiveness` (clicks, purchases)
+- Популярные страницы: `dm.v_top_pages_daily` (pageviews)
+- Качество данных: `dm.v_dq_errors_daily` (rows_cnt по error_code)
+
+---
+
+## Частые проблемы
+
+- `etl_pipeline` падает с сообщением про схему: сначала запустите `ddl_init`.
+- После `docker compose down -v` схема и данные исчезнут: нужно заново `ddl_init` и `make data`.
+- Подключения используют разные протоколы:
+  - Airflow (ClickHouseOperator) ходит в ClickHouse по native TCP (порт `9000` внутри сети Docker).
+  - Superset (clickhouse-connect) ходит по HTTP (порт `8123` внутри сети Docker).
+
+---
+
+## Статус проекта
+
+Реализовано (Этап 1):
+- DAG `ddl_init`: последовательное применение DDL + проверка схемы.
+- DAG `etl_pipeline`: precheck, ожидание данных в ODS, пересчёт DDS/DM, базовые проверки.
+- Устойчивость к "грязным" данным: ошибки парсинга сохраняются в ODS, а не валят ingest.
+
+В планах (не требуется для MVP задания):
+- DAG `kafka_load` (чистый ingest из `.jsonl` в Kafka средствами Airflow).
+- Инкрементальный batch (watermark вместо `full_refresh`).
+- DQ мониторинг по расписанию.
+
+---
+
+## Документация
 
 - [Архитектура и слои](./docs/ARCHITECTURE.md) — подробное описание STG/ODS/DDS/DM, ER-диаграммы, обоснование решений
 - [DE-task.md](./data/DE-task.md) — исходное задание
-
----
-
-## 🎯 Дашборд в Superset
-
-1. Открыть http://localhost:8088
-2. Database → Add:
-   - **URI:** `clickhouse+connect://default:123456@clickhouse:8123/default`
-3. Datasets → Add from `dm.v_*`
-4. Charts & Dashboard
-
-Основные витрины:
-- `v_events_enriched` — полное обогащение
-- `v_daily_traffic` — агрегация по дням
-- `v_utm_effectiveness` — эффективность кампаний
-- `v_top_pages_daily` — воронка страниц
-
----
-
-## 🔮 Развитие проекта
-
-### ✅ Реализовано
-- [x] **Airflow** — оркестрация batch-процесса (инфраструктура готова, DAGs в разработке)
-
-### 📋 В планах
-- [ ] **Инкрементальный batch** — watermark-based загрузка
-- [ ] **Материализация витрин** — для тяжёлых агрегаций
-- [ ] **DQ мониторинг** — алерты на ошибки парсинга
-
----
-
-## 📝 Лицензия
-
-Проект создан для образовательных целей в рамках DE-тестового задания.

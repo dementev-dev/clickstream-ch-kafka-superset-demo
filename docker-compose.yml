@@ -37,7 +37,7 @@ services:
     # container_name: kafka
     ports:
       - 9092:9092
-    # Если хочешь сохранять топики/сообщения между `docker compose down/up` — раскомментируй:
+    # Данные топиков/сообщений сохраняются в named volume `kafka-data` (между `docker compose down/up`).
     volumes:
       - kafka-data:/tmp/kraft-combined-logs
     environment:

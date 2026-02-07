@@ -589,19 +589,22 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 Инфраструктура Airflow развёрнута и готова к использованию:
 
 ```python
-# dags/etl_pipeline_dag.py
-with DAG('etl_pipeline'):
-    ddl = BashOperator(task_id='ddl', bash_command='make ddl')
-    load = BashOperator(task_id='load', bash_command='make data')
-    transform = BashOperator(task_id='transform', bash_command='make transform')
-    
-    ddl >> load >> transform
+# dags/ddl_init_dag.py и dags/etl_pipeline_dag.py
+#
+# Учебный формат:
+# - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
+# - SQL-файлы вызываются по фиксированным путям;
+# - загрузка данных в Kafka (Этап 1) выполняется через `make data`.
+#
+# Основной demo-сценарий:
+# ddl_init -> make data -> etl_pipeline
 ```
 
 **Подключение к ClickHouse:**
 - Connection: `clickhouse_default`
-- URL: `clickhouse://default:123456@clickhouse:8123/default`
-- Provider: `clickhouse-connect` (в `airflow/requirements.txt`)
+- URL: `clickhouse://default:123456@clickhouse:9000/default` (native TCP для Airflow plugin)
+- Provider/интеграция: `airflow-clickhouse-plugin` (в `airflow/requirements.txt`), задачи выполняются через `ClickHouseOperator`.
+- Примечание: Superset подключается к ClickHouse по HTTP (обычно `clickhouse+connect://...:8123/...`).
 
 ---
 
