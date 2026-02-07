@@ -4,7 +4,7 @@ x-airflow-env: &airflow-default-env
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
   AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-replace-me-with-random-string}
   # ClickHouse connection для ETL
-  AIRFLOW_CONN_CLICKHOUSE_DEFAULT: clickhouse://default:123456@clickhouse:8123/default
+  AIRFLOW_CONN_CLICKHOUSE_DEFAULT: clickhouse://default:123456@clickhouse:9000/default
 
 
 services:
@@ -97,7 +97,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.airflow
-    image: airflow-optimized:2.9.3
+    image: airflow-optimized:2.10.5
     environment:
       <<: *airflow-default-env
     command: >
@@ -108,6 +108,7 @@ services:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./sql:/opt/airflow/sql:ro
       - ./data:/opt/airflow/data
     networks:
       - cs_dwh
@@ -132,6 +133,7 @@ services:
       "
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./sql:/opt/airflow/sql:ro
       - ./data:/opt/airflow/data
     networks:
       - cs_dwh
@@ -153,13 +155,14 @@ services:
       <<: *airflow-default-env
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./sql:/opt/airflow/sql:ro
       - ./data:/opt/airflow/data
     networks:
       - cs_dwh
     command: >
       bash -ceuo pipefail "
         mkdir -p /opt/airflow/data &&
-        chmod -R 777 /opt/airflow/data || true &&
+        chmod -R a+rX /opt/airflow/data || true &&
         chown -R airflow:0 /opt/airflow/data || true &&
         umask 000 &&
         su -s /bin/bash airflow -c 'airflow db migrate' &&

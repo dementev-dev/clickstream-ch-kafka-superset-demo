@@ -1,46 +1,282 @@
 """
-ETL Pipeline DAG для ClickHouse DWH
+DAG ETL-процесса ODS -> DDS -> DM для учебного проекта.
 
-Шаблон DAG для оркестрации пайплайна данных.
-Полная реализация будет добавлена позже.
-
-Пайплайн:
-    1. DDL - создание структуры БД
-    2. Load - загрузка данных в Kafka
-    3. Transform - batch трансформация ODS → DDS → DM
+Принципы реализации:
+- SQL выполняется явными task на ClickHouseOperator;
+- SQL-файлы вызываются по фиксированным путям;
+- Python используется только для управляющей логики (branch/wait/assert).
 """
 
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.empty import EmptyOperator
+from __future__ import annotations
 
+import re
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from airflow import DAG
+from airflow.exceptions import AirflowException
+from airflow.models.param import Param
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.utils.task_group import TaskGroup
+from airflow.utils.trigger_rule import TriggerRule
+from airflow_clickhouse_plugin.hooks.clickhouse import ClickHouseHook
+from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
+
+
+# -----------------------------------------------------------------------------
 # Базовые настройки DAG
+# -----------------------------------------------------------------------------
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
     "email_on_failure": False,
     "email_on_retry": False,
     "retries": 1,
-    "retry_delay": timedelta(minutes=5),
+    "retry_delay": timedelta(minutes=2),
 }
+
+
+# -----------------------------------------------------------------------------
+# SQL-файлы проекта
+# -----------------------------------------------------------------------------
+SQL_ROOT = Path(__file__).resolve().parents[1] / "sql"
+
+
+def load_sql_statements(relative_path: str) -> tuple[str, ...]:
+    """Читает SQL-файл и делит его на отдельные команды по ';'."""
+    file_path = SQL_ROOT / relative_path
+    if not file_path.is_file():
+        raise AirflowException(f"SQL-файл не найден: {file_path}")
+
+    sql_text = file_path.read_text(encoding="utf-8")
+    statements: list[str] = []
+    for segment in sql_text.split(";"):
+        # Убираем блочные и строковые комментарии, чтобы не отправлять "пустые" запросы.
+        no_block_comments = re.sub(r"/\*.*?\*/", "", segment, flags=re.S)
+        lines = [line for line in no_block_comments.splitlines() if not line.strip().startswith("--")]
+        cleaned = "\n".join(lines).strip()
+        if cleaned:
+            statements.append(cleaned)
+
+    if not statements:
+        raise AirflowException(f"SQL-файл пустой: {file_path}")
+    return tuple(statements)
+
+
+# -----------------------------------------------------------------------------
+# SQL для проверок и технических шагов
+# -----------------------------------------------------------------------------
+SQL_CHECK_CLICKHOUSE = "SELECT 1 AS ok"
+
+SQL_CHECK_SCHEMA_READY = """
+SELECT
+    (SELECT count() FROM system.tables WHERE database = 'stg' AND name = 'browser_raw') AS stg_browser_raw,
+    (SELECT count() FROM system.tables WHERE database = 'ods' AND name = 'browser_event') AS ods_browser_event,
+    (SELECT count() FROM system.tables WHERE database = 'dds' AND name = 'event') AS dds_event,
+    (SELECT count() FROM system.tables WHERE database = 'dm' AND name = 'v_events_enriched') AS dm_v_events_enriched
+"""
+
+SQL_CHECK_ODS_QUALITY = """
+SELECT
+    count() AS total_rows,
+    countIf(length(parse_errors) > 0) AS rows_with_errors,
+    round(if(count() = 0, 0, countIf(length(parse_errors) > 0) / count() * 100), 2) AS error_pct
+FROM ods.browser_event
+"""
+
+SQL_TRUNCATE_DDS_CLICK = "TRUNCATE TABLE dds.click"
+SQL_TRUNCATE_DDS_EVENT = "TRUNCATE TABLE dds.event"
+
+SQL_CHECK_DDS_INTEGRITY = """
+SELECT
+    countIf(click_id IS NOT NULL AND click_id NOT IN (SELECT click_id FROM dds.click)) AS orphan_events
+FROM dds.event
+"""
+
+SQL_VALIDATE_DM_SUMMARY = "SELECT count() AS dq_rows FROM dm.dq_summary"
+
+
+# -----------------------------------------------------------------------------
+# Управляющие функции
+# -----------------------------------------------------------------------------
+def assert_schema_ready(**context) -> None:
+    """Падает, если DDL не применён полностью."""
+    ti = context["ti"]
+    result = ti.xcom_pull(task_ids="precheck.check_schema_ready_sql")
+
+    if not result or not result[0] or len(result[0]) != 4:
+        raise AirflowException(f"Некорректный результат check_schema_ready_sql: {result}")
+
+    if any(value == 0 for value in result[0]):
+        raise AirflowException(
+            "Схема не готова: сначала запустите DAG ddl_init, затем повторите etl_pipeline."
+        )
+
+
+def wait_for_ods_data(**context) -> None:
+    """
+    Ожидает появления строк в ods.browser_event до заданного таймаута.
+    Таймаут берётся из dag_run.conf.wait_ods_timeout_sec или из params.
+    """
+    dag_run = context.get("dag_run")
+    conf = dag_run.conf if dag_run else {}
+    timeout_sec = int(conf.get("wait_ods_timeout_sec", context["params"]["wait_ods_timeout_sec"]))
+    poll_interval_sec = 10
+
+    hook = ClickHouseHook(clickhouse_conn_id="clickhouse_default", database="default")
+    started = time.monotonic()
+
+    while True:
+        rows = hook.execute("SELECT count() FROM ods.browser_event")
+        count_rows = int(rows[0][0]) if rows else 0
+        if count_rows > 0:
+            return
+
+        elapsed = int(time.monotonic() - started)
+        if elapsed >= timeout_sec:
+            raise AirflowException(
+                f"Таймаут ожидания ODS истёк ({timeout_sec} сек). "
+                "Таблица ods.browser_event всё ещё пуста."
+            )
+
+        time.sleep(poll_interval_sec)
+
+
+def choose_full_refresh(**context) -> str:
+    """Ветвление: делать TRUNCATE DDS или пропустить."""
+    dag_run = context.get("dag_run")
+    conf = dag_run.conf if dag_run else {}
+    full_refresh = bool(conf.get("full_refresh", context["params"]["full_refresh"]))
+    return "transform.truncate_dds_click" if full_refresh else "transform.skip_truncate"
+
+
+def assert_dm_summary_not_empty(**context) -> None:
+    """Проверяет, что dm.dq_summary заполнена после загрузки."""
+    ti = context["ti"]
+    result = ti.xcom_pull(task_ids="transform.validate_dm_summary_sql")
+
+    if not result or not result[0] or len(result[0]) != 1:
+        raise AirflowException(f"Некорректный результат validate_dm_summary_sql: {result}")
+
+    dq_rows = int(result[0][0])
+    if dq_rows <= 0:
+        raise AirflowException("dm.dq_summary пуста после load_dm_summary.")
+
 
 with DAG(
     dag_id="etl_pipeline",
+    description="ETL ODS -> DDS -> DM для demo-проекта",
     default_args=default_args,
-    description="ETL pipeline для ClickHouse DWH",
-    schedule=None,  # Запуск только вручную (пока)
+    schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    tags=["etl", "clickhouse", "dwh"],
+    max_active_runs=1,
+    is_paused_upon_creation=True,
+    tags=["etl", "clickhouse", "demo"],
+    params={
+        "full_refresh": Param(True, type="boolean"),
+        "wait_ods_timeout_sec": Param(600, type="integer", minimum=30),
+    },
 ) as dag:
-    
-    # TODO: добавить задачи пайплайна
-    # - ddl: создание структуры БД
-    # - load: загрузка данных в Kafka  
-    # - transform: batch трансформация
-    
-    start = EmptyOperator(task_id="start")
-    end = EmptyOperator(task_id="end")
-    
-    start >> end
+    with TaskGroup(group_id="precheck") as precheck:
+        check_clickhouse = ClickHouseOperator(
+            task_id="check_clickhouse",
+            sql=SQL_CHECK_CLICKHOUSE,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        check_schema_ready_sql = ClickHouseOperator(
+            task_id="check_schema_ready_sql",
+            sql=SQL_CHECK_SCHEMA_READY,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        check_schema_ready = PythonOperator(
+            task_id="check_schema_ready",
+            python_callable=assert_schema_ready,
+        )
+
+        check_clickhouse >> check_schema_ready_sql >> check_schema_ready
+
+    with TaskGroup(group_id="transform") as transform:
+        wait_for_ods_data_task = PythonOperator(
+            task_id="wait_for_ods_data",
+            python_callable=wait_for_ods_data,
+        )
+
+        check_ods_quality = ClickHouseOperator(
+            task_id="check_ods_quality",
+            sql=SQL_CHECK_ODS_QUALITY,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        choose_refresh_mode = BranchPythonOperator(
+            task_id="choose_refresh_mode",
+            python_callable=choose_full_refresh,
+        )
+
+        truncate_dds_click = ClickHouseOperator(
+            task_id="truncate_dds_click",
+            sql=SQL_TRUNCATE_DDS_CLICK,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        truncate_dds_event = ClickHouseOperator(
+            task_id="truncate_dds_event",
+            sql=SQL_TRUNCATE_DDS_EVENT,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        skip_truncate = EmptyOperator(task_id="skip_truncate")
+
+        truncate_complete = EmptyOperator(
+            task_id="truncate_complete",
+            trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+        )
+
+        load_dds = ClickHouseOperator(
+            task_id="load_dds",
+            sql=load_sql_statements("dds/30_ods_to_dds.sql"),
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        check_dds_integrity = ClickHouseOperator(
+            task_id="check_dds_integrity",
+            sql=SQL_CHECK_DDS_INTEGRITY,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        load_dm_summary = ClickHouseOperator(
+            task_id="load_dm_summary",
+            sql=load_sql_statements("dm/40_dds_to_dm.sql"),
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        validate_dm_summary_sql = ClickHouseOperator(
+            task_id="validate_dm_summary_sql",
+            sql=SQL_VALIDATE_DM_SUMMARY,
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
+        )
+
+        validate_dm_summary = PythonOperator(
+            task_id="validate_dm_summary",
+            python_callable=assert_dm_summary_not_empty,
+        )
+
+        wait_for_ods_data_task >> check_ods_quality >> choose_refresh_mode
+        choose_refresh_mode >> truncate_dds_click >> truncate_dds_event >> truncate_complete
+        choose_refresh_mode >> skip_truncate >> truncate_complete
+        truncate_complete >> load_dds >> check_dds_integrity >> load_dm_summary >> validate_dm_summary_sql >> validate_dm_summary
+
+    precheck >> transform

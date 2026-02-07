@@ -1,10 +1,7 @@
-# Airflow requirements для ClickHouse DWH проекта
+# Airflow requirements для учебного ETL-проекта
 
-# Core database connector для metadata
+# Metadata DB для Airflow
 psycopg2-binary==2.9.9
 
-# ClickHouse provider для ETL
+# ClickHouse operator/hook для DAG'ов
 airflow-clickhouse-plugin==1.6.0
-
-# Для работы с данными
-pandas==2.1.4
