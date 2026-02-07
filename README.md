@@ -140,6 +140,9 @@ flowchart TB
 | `FULL=1 make data` | Загрузить полный датасет |
 | `make transform` | Запустить batch-процесс |
 
+> Примечание: данные ClickHouse теперь сохраняются в Docker volume `clickhouse-data`.  
+> `docker compose down` сохраняет данные, `docker compose down -v` удаляет все volume (включая ClickHouse).
+
 ---
 
 ## 🔗 Ключи данных

@@ -20,6 +20,7 @@ services:
     networks:
       - cs_dwh
     volumes:
+      - clickhouse-data:/var/lib/clickhouse
       - ./configs/default_user.xml:/etc/clickhouse-server/users.d/default_user.xml
       # - ./configs/z_config.xml:/etc/clickhouse-server/config.d/z_config.xml
       # - ./configs/macros_ch1.xml:/etc/clickhouse-server/config.d/macros.xml
@@ -235,9 +236,9 @@ networks:
     driver: bridge
 
 volumes:
+  clickhouse-data:
   grafana_lib:
   kafka-data:
   pgmeta:
   superset_data:
   superset_config:
-
