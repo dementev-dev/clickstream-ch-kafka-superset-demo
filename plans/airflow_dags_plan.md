@@ -1,11 +1,11 @@
 # План развития Airflow DAG'ов
 
 ## Цель
-Перевести оркестрацию ETL на Airflow так, чтобы пайплайн оставался устойчивым к "грязным" данным и соответствовал текущей цели проекта: Kafka → ClickHouse (STG → ODS → DDS → DM) → витрины для BI.
+Перевести оркестрацию ETL на Airflow так, чтобы пайплайн оставался устойчивым к "грязным" данным и соответствовал целям проекта: Kafka → ClickHouse (STG → ODS → DDS → DM) → витрины для BI.
 
 ## Что важно учесть в текущем репозитории
 - В `AGENTS.md` как quick check ожидается DAG `etl_pipeline`.
-- В Airflow-контейнере сейчас нет Kafka CLI, поэтому `kafka-topics.sh` и `kafka-console-producer.sh` из `BashOperator` использовать нельзя без донастройки образа.
+- В Airflow-контейнере сейчас нет Kafka CLI, поэтому `kafka-topics.sh` и `kafka-console-producer.sh` из `BashOperator` не используем.
 - DDL должен выполняться строго последовательно: `00 -> 10 -> 20 -> 30 -> 40`.
 - Файл `jobs/30_dds_refresh.sql` уже включает обе загрузки (`dds.click` и `dds.event`), поэтому в MVP это одна task.
 
@@ -17,13 +17,21 @@
 - `is_paused_upon_creation`: `True`.
 - `tags`: `["ddl", "bootstrap", "clickhouse"]`.
 
-### DAG 2 (обязательный): `etl_pipeline`
+### DAG 2 (обязательный): `kafka_load`
+- `schedule`: `None` (ручной/экспериментальный запуск).
+- `catchup`: `False`.
+- `max_active_runs`: `1`.
+- `is_paused_upon_creation`: `True`.
+- `tags`: `["kafka", "ingest", "experiments"]`.
+- Реализация: этап 2 (после MVP).
+
+### DAG 3 (обязательный): `etl_pipeline`
 - `schedule`: `None` (ручной запуск для демо).
 - `catchup`: `False`.
 - `max_active_runs`: `1`.
-- `tags`: `["etl", "clickhouse", "kafka", "demo"]`.
+- `tags`: `["etl", "clickhouse", "demo"]`.
 
-### DAG 3 (опциональный): `dq_monitor`
+### DAG 4 (опциональный): `dq_monitor`
 - `schedule`: `0 * * * *`.
 - `catchup`: `False`.
 - `tags`: `["dq", "monitoring"]`.
@@ -49,40 +57,54 @@ check_clickhouse >> ddl_00_databases >> ddl_10_stg >> ddl_20_ods >> ddl_30_dds >
 ```
 
 Примечание:
-- DDL DAG запускается вручную: при первом bootstrap, при изменении схемы, после `docker compose down -v`.
+- `ddl_init` запускается вручную: при первом bootstrap, после `docker compose down -v`, после изменений схемы.
 
-## Дизайн DAG `etl_pipeline`
+## Дизайн DAG `kafka_load` (отдельный независимый контур)
 ### Params (через Trigger DAG with config)
-- `run_ingest`: bool, default `true`.
 - `limit`: int, default `50`.
 - `full_load`: bool, default `false`.
 - `reset_topics`: bool, default `true`.
+- `load_browser`: bool, default `true`.
+- `load_location`: bool, default `true`.
+- `load_device`: bool, default `true`.
+- `load_geo`: bool, default `true`.
+
+### TaskGroup `precheck`
+| Task ID | Что делает | Реализация |
+|---------|------------|------------|
+| `check_kafka` | Проверка доступности Kafka broker | `PythonOperator` + `kafka-python` |
+| `check_input_files` | Проверка наличия `data/*_events.jsonl` | `PythonOperator` |
+| `validate_load_params` | Валидация параметров загрузки (`limit`, `full_load`, флаги потоков) | `PythonOperator` |
+
+### TaskGroup `ingest`
+| Task ID | Что делает | Реализация |
+|---------|------------|------------|
+| `prepare_topics` | reset/create топиков по `reset_topics` | `PythonOperator` + AdminClient |
+| `load_browser_events` | Публикация `browser_events.jsonl` | `PythonOperator` + KafkaProducer |
+| `load_location_events` | Публикация `location_events.jsonl` | `PythonOperator` + KafkaProducer |
+| `load_device_events` | Публикация `device_events.jsonl` | `PythonOperator` + KafkaProducer |
+| `load_geo_events` | Публикация `geo_events.jsonl` | `PythonOperator` + KafkaProducer |
+| `verify_publish_counts` | Проверка, что отправлено > 0 сообщений в выбранные потоки | `PythonOperator` (по XCom) |
+
+Зависимости:
+```text
+precheck >> prepare_topics >> [load_browser_events, load_location_events, load_device_events, load_geo_events] >> verify_publish_counts
+```
+
+Примечания:
+- DAG намеренно независим от `etl_pipeline`: можно запускать ingest отдельно для экспериментов.
+- Авто-триггер `etl_pipeline` не включаем по умолчанию; при необходимости добавляется отдельным параметром позже.
+
+## Дизайн DAG `etl_pipeline`
+### Params (через Trigger DAG with config)
 - `full_refresh`: bool, default `true`.
+- `wait_ods_timeout_sec`: int, default `600`.
 
 ### TaskGroup `precheck`
 | Task ID | Что делает | Реализация |
 |---------|------------|------------|
 | `check_clickhouse` | Проверка доступности CH (`SELECT 1`) | `PythonOperator` + `clickhouse-connect` |
-| `check_schema_ready` | Проверка, что DDL уже применён (наличие `stg.browser_raw`, `ods.browser_event`, `dds.event`, `dm.v_events_enriched`) | SQL-check, fail fast |
-| `check_input_files` | Проверка наличия `data/*_events.jsonl` | `PythonOperator` |
-
-### TaskGroup `ingest` (выполняется только при `run_ingest=true`)
-| Task ID | Что делает | Реализация |
-|---------|------------|------------|
-| `kafka_prepare_topics` | reset/create топиков по параметру `reset_topics` | `PythonOperator` + `kafka-python` AdminClient |
-| `load_browser` | Публикация строк из `browser_events.jsonl` | `PythonOperator` + `KafkaProducer` |
-| `load_location` | Публикация строк из `location_events.jsonl` | `PythonOperator` + `KafkaProducer` |
-| `load_device` | Публикация строк из `device_events.jsonl` | `PythonOperator` + `KafkaProducer` |
-| `load_geo` | Публикация строк из `geo_events.jsonl` | `PythonOperator` + `KafkaProducer` |
-| `wait_for_stg_data` | Ожидание появления данных в `stg.*_raw` | `PythonSensor`/poll SQL |
-
-Зависимости:
-```text
-kafka_prepare_topics >> [load_browser, load_location, load_device, load_geo] >> wait_for_stg_data
-```
-
-Примечание:
-- Для демо соблюдать ограничение на малый срез данных: `limit=20..50` по умолчанию.
+| `check_schema_ready` | Проверка, что DDL уже применён (`stg.browser_raw`, `ods.browser_event`, `dds.event`, `dm.v_events_enriched`) | SQL-check, fail fast |
 
 ### TaskGroup `transform`
 | Task ID | Что делает | Источник SQL |
@@ -103,19 +125,29 @@ wait_for_ods_data >> check_ods_quality >> [truncate_dds_click, truncate_dds_even
 
 ### Итоговая цепочка `etl_pipeline`
 ```text
-precheck >> ingest(optional) >> transform
+precheck >> transform
 ```
+
+## Взаимодействие DAG'ов
+Базовый сценарий:
+```text
+ddl_init -> kafka_load -> etl_pipeline
+```
+
+Экспериментальные сценарии:
+- `kafka_load` отдельно: проверить разные наборы/параметры загрузки без запуска transform.
+- `etl_pipeline` отдельно: повторно пересчитать DDS/DM по уже загруженным данным.
 
 ## Техническая реализация (приземленно)
 ### ClickHouse в Airflow
-- Использовать `clickhouse-connect` напрямую в Python helper, а не `SQLExecuteQueryOperator`.
+- Использовать `clickhouse-connect` напрямую в Python helper.
 - Брать параметры подключения из `conn_id = clickhouse_default` через `BaseHook.get_connection`.
 
 ### Kafka в Airflow
-- Добавить зависимость `kafka-python` в `airflow/requirements.txt`.
+- Добавить `kafka-python` в `airflow/requirements.txt`.
 - Использовать Python-код для:
   - reset/create топиков;
-  - публикации строк из `.jsonl` (1 строка = 1 message value).
+  - публикации строк из `.jsonl` (`1 строка = 1 message value`).
 
 ### Общие helper-функции
 - `dags/utils/clickhouse_helpers.py`:
@@ -125,13 +157,15 @@ precheck >> ingest(optional) >> transform
 - `dags/utils/kafka_helpers.py`:
   - `prepare_topics(reset: bool) -> None`
   - `load_jsonl(file_path: str, topic: str, limit: int, full_load: bool) -> int`
+  - `check_kafka_ready() -> None`
 
 ## Структура файлов
 ```text
 dags/
 ├── __init__.py
 ├── ddl_init_dag.py           # отдельный DAG для DDL (обязателен)
-├── etl_pipeline_dag.py       # основной ETL DAG (обязателен)
+├── kafka_load_dag.py         # отдельный DAG для ingest в Kafka (обязателен)
+├── etl_pipeline_dag.py       # основной DAG ODS -> DDS -> DM (обязателен)
 ├── dq_monitor_dag.py         # опциональный DAG мониторинга
 └── utils/
     ├── __init__.py
@@ -142,23 +176,30 @@ dags/
 ## Этапы внедрения
 1. Этап 1 (MVP, обязательно):
    - Реализовать `ddl_init` и `etl_pipeline`.
-   - В `etl_pipeline` оставить `precheck + transform`, ingest пока выполнять внешней командой `make data`.
-   - Проверить путь: `ddl_init` -> ODS -> DDS -> DM после ручной загрузки в Kafka.
+   - Для загрузки данных использовать существующий сценарий `make data`.
+   - Проверить путь `ddl_init -> make data -> etl_pipeline`.
 2. Этап 2:
-   - Добавить в `etl_pipeline` ingest внутри DAG через `kafka-python`.
-   - Добавить ветвление `run_ingest=false` для сценария "только transform".
+   - Реализовать отдельный DAG `kafka_load` на `kafka-python`.
+   - Перенести загрузку из `make data` в `kafka_load` (функциональный паритет).
+   - Добавить в `kafka_load` расширенные параметры экспериментов (выбор потоков, сценарии reset/no-reset).
+   - Добавить опциональный параметр автотриггера `etl_pipeline` (по умолчанию `false`).
 3. Этап 3:
    - Добавить `dq_monitor` и alert callback (email/Slack/webhook).
 
 ## Критерии готовности
-- В Airflow UI видны DAG `ddl_init` и `etl_pipeline`.
-- `etl_pipeline` падает с понятной ошибкой, если схема не применена.
-- Ручной запуск DAG с `limit=50` завершает pipeline без падений.
-- После прогона:
-  - в `ods.browser_event` есть строки;
-  - в `dds.click` и `dds.event` есть строки;
-  - `dm.dq_summary` заполнена.
-- При повторном запуске с `full_refresh=true` нет неконтролируемых дублей в DDS.
+- Этап 1:
+  - В Airflow UI видны DAG `ddl_init` и `etl_pipeline`.
+  - `etl_pipeline` падает с понятной ошибкой, если схема не применена или ODS пуста.
+  - После прогона `make data -> etl_pipeline`:
+    - в `ods.browser_event` есть строки;
+    - в `dds.click` и `dds.event` есть строки;
+    - `dm.dq_summary` заполнена.
+- Этап 2:
+  - В Airflow UI дополнительно виден DAG `kafka_load`.
+  - `kafka_load` с `limit=50` завершает отправку сообщений без падений.
+  - После прогона `kafka_load -> etl_pipeline` результаты совпадают с `make data -> etl_pipeline`.
+- Для всех этапов:
+  - При повторном запуске `etl_pipeline` с `full_refresh=true` нет неконтролируемых дублей в DDS.
 
 ## Минимальные smoke-checks
 ```bash
@@ -171,16 +212,23 @@ make up
 # 3) Один раз запустить ddl_init
 # Trigger DAG ddl_init (без config или {"verify_only": false})
 
-# 4) Trigger DAG etl_pipeline с config:
-# {"run_ingest": true, "limit": 50, "full_load": false, "reset_topics": true, "full_refresh": true}
+# 4) Этап 1: загрузить данные текущим способом
+make data
 
-# 5) Проверка результатов
+# 5) Запустить etl_pipeline
+# {"full_refresh": true}
+
+# 6) Проверка результатов
 docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM ods.browser_event"
 docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dds.click"
 docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dds.event"
 docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dm.dq_summary"
+
+# 7) Этап 2: после реализации kafka_load
+# Trigger DAG kafka_load {"limit": 50, "full_load": false, "reset_topics": true}
+# Trigger DAG etl_pipeline {"full_refresh": true}
 ```
 
 ## Следующий шаг после MVP
-- Для ускорения можно разделить `jobs/30_dds_refresh.sql` на два файла и распараллелить `refresh_dds_click` и `refresh_dds_event` в DAG.
-- Для продакшн-режима перейти с `full_refresh` на watermark-инкремент.
+- Разделить `jobs/30_dds_refresh.sql` на два файла и распараллелить `refresh_dds_click` и `refresh_dds_event`.
+- Перейти с `full_refresh` на watermark-инкремент.
