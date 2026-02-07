@@ -21,15 +21,14 @@
 
 ### Исполняемые файлы (текущая структура)
 - `dags/` — Airflow DAGs для оркестрации ETL
-- `ddl/` — SQL для создания объектов БД:
-  - `00_databases.sql` — создание БД stg/ods/dds/dm
-  - `10_stg.sql` — STG слой (Kafka Engine + MV)
-  - `20_ods.sql` — ODS слой (типизация + MV для ошибок)
-  - `30_dds.sql` — DDS слой (таблицы для batch-загрузки)
-  - `40_dm.sql` — DM слой (витрины VIEW)
-- `jobs/` — batch-трансформации:
-  - `30_dds_refresh.sql` — ODS → DDS (argMax + JOIN)
-  - `40_dm_refresh.sql` — обновление DQ_summary
+- `sql/` — SQL по слоям:
+  - `sql/ddl/00_databases.sql` — создание БД stg/ods/dds/dm
+  - `sql/ddl/stg/10_stg.sql` — STG слой (Kafka Engine + MV)
+  - `sql/ddl/ods/20_ods.sql` — ODS слой (типизация + MV для ошибок)
+  - `sql/ddl/dds/30_dds.sql` — DDS слой (таблицы для batch-загрузки)
+  - `sql/ddl/dm/40_dm.sql` — DM слой (витрины VIEW)
+  - `sql/dds/30_ods_to_dds.sql` — ODS → DDS (argMax + JOIN)
+  - `sql/dm/40_dds_to_dm.sql` — обновление DQ_summary
 - `scripts/` — скрипты автоматизации:
   - `apply_clickhouse_ddl.sh` — применение DDL
   - `load_kafka_data.sh` — загрузка в Kafka
@@ -57,7 +56,7 @@
 Базовые команды:
 
 - `make up` (или `docker compose up -d`)
-- `make ddl` (применяет SQL из `ddl/*.sql` в ClickHouse)
+- `make ddl` (применяет SQL из `sql/ddl/00_databases.sql` и `sql/ddl/*/*.sql` в ClickHouse)
 - `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
 - `make transform` (запускает batch-процесс ODS → DDS → DM)
 - `docker compose up -d`
@@ -88,7 +87,7 @@
 - **Комментарии в коде — на русском языке**:
   - SQL: заголовочный блок с описанием файла, комментарии к каждому логическому блоку
   - Bash: шапка с назначением/запуском/требованиями, секции разделены `# -----`
-  - См. существующие файлы как пример (`ddl/20_ods.sql`, `jobs/30_dds_refresh.sql`, `scripts/run_batch.sh`)
+  - См. существующие файлы как пример (`sql/ddl/ods/20_ods.sql`, `sql/dds/30_ods_to_dds.sql`, `scripts/run_batch.sh`)
 
 ## Быстрые проверки
 

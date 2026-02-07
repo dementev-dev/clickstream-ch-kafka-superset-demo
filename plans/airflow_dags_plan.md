@@ -7,7 +7,7 @@
 - В `AGENTS.md` как quick check ожидается DAG `etl_pipeline`.
 - В Airflow-контейнере сейчас нет Kafka CLI, поэтому `kafka-topics.sh` и `kafka-console-producer.sh` из `BashOperator` не используем.
 - DDL должен выполняться строго последовательно: `00 -> 10 -> 20 -> 30 -> 40`.
-- Файл `jobs/30_dds_refresh.sql` уже включает обе загрузки (`dds.click` и `dds.event`), поэтому в MVP это одна task.
+- Файл `sql/dds/30_ods_to_dds.sql` уже включает обе загрузки (`dds.click` и `dds.event`), поэтому в MVP это одна task.
 
 ## Архитектура оркестрации
 ### DAG 1 (обязательный): `ddl_init`
@@ -44,11 +44,11 @@
 | Task ID | Что делает | Источник SQL/реализация |
 |---------|------------|--------------------------|
 | `check_clickhouse` | Проверка доступности CH (`SELECT 1`) | `PythonOperator` + `clickhouse-connect` |
-| `ddl_00_databases` | Создание БД | `ddl/00_databases.sql` |
-| `ddl_10_stg` | STG + Kafka Engine + MV | `ddl/10_stg.sql` |
-| `ddl_20_ods` | ODS + MV STG→ODS + *_errors | `ddl/20_ods.sql` |
-| `ddl_30_dds` | Таблицы DDS | `ddl/30_dds.sql` |
-| `ddl_40_dm` | VIEW витрины DM | `ddl/40_dm.sql` |
+| `ddl_00_databases` | Создание БД | `sql/ddl/00_databases.sql` |
+| `ddl_10_stg` | STG + Kafka Engine + MV | `sql/ddl/stg/10_stg.sql` |
+| `ddl_20_ods` | ODS + MV STG→ODS + *_errors | `sql/ddl/ods/20_ods.sql` |
+| `ddl_30_dds` | Таблицы DDS | `sql/ddl/dds/30_dds.sql` |
+| `ddl_40_dm` | VIEW витрины DM | `sql/ddl/dm/40_dm.sql` |
 | `verify_schema` | Проверка ключевых таблиц/VIEW | SQL-check |
 
 Зависимости:
@@ -113,14 +113,14 @@ precheck >> prepare_topics >> [load_browser_events, load_location_events, load_d
 | `check_ods_quality` | Базовые DQ-метрики ODS (ошибки/total) | SQL-check |
 | `truncate_dds_click` | Очистка `dds.click` при `full_refresh=true` | inline SQL |
 | `truncate_dds_event` | Очистка `dds.event` при `full_refresh=true` | inline SQL |
-| `refresh_dds` | ODS → DDS | `jobs/30_dds_refresh.sql` |
+| `load_dds` | ODS → DDS | `sql/dds/30_ods_to_dds.sql` |
 | `check_dds_integrity` | Проверка orphan событий | inline SQL |
-| `refresh_dm_summary` | DDS → DM DQ summary | `jobs/40_dm_refresh.sql` |
+| `load_dm_summary` | DDS → DM DQ summary | `sql/dm/40_dds_to_dm.sql` |
 | `validate_dm_summary` | Проверка, что `dm.dq_summary` не пуста | SQL-check |
 
 Зависимости:
 ```text
-wait_for_ods_data >> check_ods_quality >> [truncate_dds_click, truncate_dds_event] >> refresh_dds >> check_dds_integrity >> refresh_dm_summary >> validate_dm_summary
+wait_for_ods_data >> check_ods_quality >> [truncate_dds_click, truncate_dds_event] >> load_dds >> check_dds_integrity >> load_dm_summary >> validate_dm_summary
 ```
 
 ### Итоговая цепочка `etl_pipeline`
@@ -230,5 +230,5 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 ```
 
 ## Следующий шаг после MVP
-- Разделить `jobs/30_dds_refresh.sql` на два файла и распараллелить `refresh_dds_click` и `refresh_dds_event`.
+- Разделить `sql/dds/30_ods_to_dds.sql` на два файла и распараллелить `load_dds_click` и `load_dds_event`.
 - Перейти с `full_refresh` на watermark-инкремент.

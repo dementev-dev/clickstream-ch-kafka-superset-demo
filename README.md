@@ -109,8 +109,15 @@ flowchart TB
 ```
 .
 ├── dags/             # Airflow DAGs для оркестрации
-├── ddl/              # SQL для создания объектов (00_databases → 40_dm)
-├── jobs/             # Batch-трансформации (ODS→DDS, DDS→DM)
+├── sql/
+│   ├── ddl/          # DDL по слоям
+│   │   ├── 00_databases.sql
+│   │   ├── stg/10_stg.sql
+│   │   ├── ods/20_ods.sql
+│   │   ├── dds/30_dds.sql
+│   │   └── dm/40_dm.sql
+│   ├── dds/          # Batch SQL: ODS -> DDS
+│   └── dm/           # Batch SQL: DDS -> DM
 ├── scripts/          # Автоматизация (apply ddl, load data, run batch)
 ├── airflow/          # Конфигурация Airflow
 │   └── requirements.txt

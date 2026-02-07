@@ -3,8 +3,8 @@
 # Скрипт применения DDL в ClickHouse
 #
 # Назначение:
-#   Последовательно применяет SQL-файлы из ddl/*.sql в базу ClickHouse.
-#   Файлы применяются в алфавитном порядке (00 → 10 → 20 → 30 → 40).
+#   Последовательно применяет SQL-файлы из sql/ddl/* в базу ClickHouse.
+#   Порядок фиксированный: 00 → 10 → 20 → 30 → 40.
 #
 # Как запускать:
 #   make ddl
@@ -22,7 +22,7 @@ set -euo pipefail
 
 # Директория со скриптом
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DDL_DIR="${SCRIPT_DIR}/../ddl"
+SQL_ROOT_DIR="${SCRIPT_DIR}/../sql"
 
 # Параметры подключения (можно переопределить через переменные окружения)
 COMPOSE_BIN="${COMPOSE_BIN:-docker compose}"
@@ -31,7 +31,7 @@ CLICKHOUSE_DB="${CLICKHOUSE_DB:-default}"
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-123456}"
 
-echo "Применение DDL из ${DDL_DIR}..."
+echo "Применение DDL из ${SQL_ROOT_DIR}..."
 
 # -----------------------------------------------------------------------------
 # Проверка: ClickHouse запущен?
@@ -45,18 +45,28 @@ fi
 # -----------------------------------------------------------------------------
 # Применение SQL-файлов по порядку
 # -----------------------------------------------------------------------------
-# shellcheck disable=SC2044
-for sql_file in "${DDL_DIR}"/*.sql; do
-    if [[ -f "$sql_file" ]]; then
-        echo "Применение: $(basename "$sql_file")"
-        ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
-            --user="${CLICKHOUSE_USER}" \
-            --password="${CLICKHOUSE_PASSWORD}" \
-            --database="${CLICKHOUSE_DB}" \
-            --multiquery \
-            < "$sql_file"
-        echo "  ✓ OK"
+DDL_FILES=(
+    "${SQL_ROOT_DIR}/ddl/00_databases.sql"
+    "${SQL_ROOT_DIR}/ddl/stg/10_stg.sql"
+    "${SQL_ROOT_DIR}/ddl/ods/20_ods.sql"
+    "${SQL_ROOT_DIR}/ddl/dds/30_dds.sql"
+    "${SQL_ROOT_DIR}/ddl/dm/40_dm.sql"
+)
+
+for sql_file in "${DDL_FILES[@]}"; do
+    if [[ ! -f "$sql_file" ]]; then
+        echo "Ошибка: не найден SQL-файл: $sql_file" >&2
+        exit 1
     fi
+
+    echo "Применение: $(basename "$sql_file")"
+    ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
+        --user="${CLICKHOUSE_USER}" \
+        --password="${CLICKHOUSE_PASSWORD}" \
+        --database="${CLICKHOUSE_DB}" \
+        --multiquery \
+        < "$sql_file"
+    echo "  ✓ OK"
 done
 
 echo ""

@@ -8,7 +8,7 @@
 --
 -- Загрузка:
 --   Batch SQL (не MV!) — для согласованности при late arrivals
---   См. jobs/30_dds_refresh.sql
+--   См. sql/dds/30_ods_to_dds.sql
 --
 -- Почему не MV:
 --   - MV с JOIN даёт eventual consistency (данные приходят в разное время)
