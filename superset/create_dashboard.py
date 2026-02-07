@@ -5,19 +5,12 @@
 ================================================================================
 Назначение:
     - Создание чартов (Charts) на основе датасетов DM-слоя
-    - Создание дашборда с布局 и фильтрами
+    - Создание дашборда с layout и фильтрами
     - Настройка native filters
 
 Запуск:
     Внутри контейнера superset:
     python /app/superset_init/create_dashboard.py
-
-Чарты которые создаются:
-    1. KPI блок (4 Big Number): Total Events, Unique Users, Sessions, Avg/Sess
-    2. Динамика: Events by Hour (Line), Traffic by Device (Pie)
-    3. География: World Map по странам
-    4. Маркетинг: UTM Source/Medium Table, Top Pages Bar
-    5. Качество данных: DQ Summary Bar
 ================================================================================
 """
 
@@ -31,21 +24,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, '/app')
-
-try:
-    from superset.app import create_app
-    from superset.extensions import db, security_manager
-    from superset.connectors.sqla.models import SqlaTable
-    from superset.charts.data_access_layer import ChartDAO
-    from superset.dashboards.data_access_layer import DashboardDAO
-    from superset.charts.schemas import ChartPostSchema
-    from superset.dashboards.schemas import DashboardPostSchema
-    from superset.commands.chart.create import CreateChartCommand
-    from superset.commands.dashboard.create import CreateDashboardCommand
-    from superset.utils.core import DatasourceType
-except ImportError as e:
-    logger.error(f"Failed to import Superset modules: {e}")
-    sys.exit(1)
 
 
 # Конфигурация чартов
@@ -245,7 +223,7 @@ CHARTS_CONFIG = [
 # Конфигурация дашборда
 DASHBOARD_CONFIG = {
     "dashboard_title": "🛒 E-commerce Analytics Dashboard",
-    "description": "Аналитический дашборд для e-commerce кликстрима. Показывает трафик, конверсии, географию и качество данных.",
+    "description": "Аналитический дашборд для e-commerce кликстрима: трафик, конверсии, география и качество данных.",
     "published": True,
     "slug": "ecommerce-analytics",
     "json_metadata": json.dumps({
@@ -297,8 +275,10 @@ DASHBOARD_CONFIG = {
 }
 
 
-def get_dataset_by_name(app, dataset_name: str) -> SqlaTable:
+def get_dataset_by_name(app, dataset_name: str):
     """Получение датасета по имени таблицы"""
+    from superset.connectors.sqla.models import SqlaTable
+    
     with app.app_context():
         dataset = db.session.query(SqlaTable).filter_by(
             table_name=dataset_name,
@@ -307,18 +287,14 @@ def get_dataset_by_name(app, dataset_name: str) -> SqlaTable:
         return dataset
 
 
-def create_chart(app, chart_config: dict, dataset: SqlaTable) -> Optional[dict]:
+def create_chart(app, chart_config: dict, dataset):
     """Создание чарта"""
+    from superset.extensions import db
+    from superset.utils.core import DatasourceType
+    from superset.charts.commands.create import CreateChartCommand
+    
     with app.app_context():
         try:
-            # Проверяем, существует ли чарт
-            from superset.charts.data_access_layer import ChartDAO
-            existing = ChartDAO.find_by_title(chart_config["slice_name"])
-            
-            if existing:
-                logger.info(f"Chart '{chart_config['slice_name']}' already exists")
-                return {"id": existing.id, "title": existing.slice_name}
-            
             # Подготавливаем параметры
             params = chart_config["params"].copy()
             params["datasource"] = f"{dataset.id}__{DatasourceType.TABLE.value}"
@@ -334,9 +310,6 @@ def create_chart(app, chart_config: dict, dataset: SqlaTable) -> Optional[dict]:
                 "description": f"Chart created automatically for {chart_config['dataset_name']}"
             }
             
-            # Используем прямой SQL для создания
-            from superset.charts.commands.create import CreateChartCommand
-            
             result = CreateChartCommand(chart_data).run()
             logger.info(f"Created chart: {chart_config['slice_name']} (ID: {result.id})")
             return {"id": result.id, "title": result.slice_name}
@@ -350,10 +323,14 @@ def create_chart(app, chart_config: dict, dataset: SqlaTable) -> Optional[dict]:
 
 def create_dashboard(app, charts: list):
     """Создание дашборда с чартами"""
+    from superset.extensions import db
+    from superset.dashboards.commands.create import CreateDashboardCommand
+    from superset.dashboards.dao import DashboardDAO
+    from superset.charts.dao import ChartDAO
+    
     with app.app_context():
         try:
             # Проверяем, существует ли дашборд
-            from superset.dashboards.data_access_layer import DashboardDAO
             existing = DashboardDAO.get_by_slug(DASHBOARD_CONFIG["slug"])
             
             if existing:
@@ -366,12 +343,6 @@ def create_dashboard(app, charts: list):
             }
             
             # Добавляем чарты в layout (grid: 12 columns)
-            # Row 1: KPI блок (4 чарта по 3 колонки)
-            # Row 2: Events by Hour (8) | Geography (4)
-            # Row 3: Traffic by Device (4) | Top Pages (8)
-            # Row 4: UTM Table (12)
-            # Row 5: DQ Summary (12)
-            
             y_position = 0
             chart_index = 0
             
@@ -385,7 +356,7 @@ def create_dashboard(app, charts: list):
                             "chartId": chart['id'],
                             "sliceName": chart['title'],
                             "height": 50,
-                            "width": 4 if chart_index < 4 else 6,  # KPI - по 4, остальные - по 6
+                            "width": 4 if chart_index < 4 else 6,
                             "x": (chart_index % 3) * 4 if chart_index < 4 else (chart_index % 2) * 6,
                             "y": y_position
                         }
@@ -404,14 +375,11 @@ def create_dashboard(app, charts: list):
                 "position_json": json.dumps(positions)
             }
             
-            from superset.dashboards.commands.create import CreateDashboardCommand
             result = CreateDashboardCommand(dashboard_data).run()
             
             # Добавляем чарты к дашборду
-            from superset.dashboards.dao import DashboardDAO
             dashboard = DashboardDAO.get_by_id(result.id)
             
-            from superset.charts.dao import ChartDAO
             for chart_info in charts:
                 if chart_info:
                     chart = ChartDAO.find_by_id(chart_info["id"])
@@ -435,6 +403,9 @@ def main():
     logger.info("=" * 60)
     logger.info("Creating E-commerce Analytics Dashboard")
     logger.info("=" * 60)
+    
+    from superset.app import create_app
+    from superset.extensions import db
     
     app = create_app()
     
