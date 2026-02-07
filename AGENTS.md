@@ -34,7 +34,7 @@
   - `load_kafka_data.sh` — загрузка в Kafka
   - `run_batch.sh` — запуск batch-процесса
 - `airflow/` — конфигурация Airflow:
-  - `requirements.txt` — зависимости (clickhouse-connect и др.)
+  - `requirements.txt` — зависимости Airflow/ClickHouse plugin
 
 ### Планы и документация (legacy)
 - `plans/clickhouse_ddl.md` — исходный план (inline DDL, legacy)
@@ -62,6 +62,7 @@
 - `docker compose up -d`
 - `docker compose ps`
 - `docker compose logs -f --tail=200 <service>`
+- `docker compose down` (сохраняет named volumes, включая `clickhouse-data`)
 - `docker compose down -v` (удалит volumes; используйте осознанно)
 
 Порты (см. `docker-compose.yml`):
@@ -84,6 +85,7 @@
 - Держать изменения минимальными и по теме задания (инфра, схема, ingest, витрины).
 - Не коммитить секреты. Если требуется пароль/ключи — использовать `.env` и примеры `.env.example`.
 - README/планы обновлять вместе с изменениями инфраструктуры/DDL.
+- Для спорных или меняющихся API (особенно Airflow/operators/providers) проверять актуальную документацию через `context7` и фиксировать решение в коде/документации.
 - **Комментарии в коде — на русском языке**:
   - SQL: заголовочный блок с описанием файла, комментарии к каждому логическому блоку
   - Bash: шапка с назначением/запуском/требованиями, секции разделены `# -----`
@@ -93,7 +95,7 @@
 
 - Kafka ingest: наличие данных в `stg.*` и типизированных строк в `ods.*`.
 - Мониторинг: доступность `/metrics` у ClickHouse и скрейп в Prometheus.
-- **Airflow: `http://localhost:8080` должен показывать UI и DAG `etl_pipeline`.**
+- **Airflow: `http://localhost:8080` должен показывать UI и DAG `ddl_init` и `etl_pipeline`.**
 - BI: витрина `dm.v_events_enriched` должна отвечать за разумное время при фильтре по дате.
 
 ## Связанная документация
