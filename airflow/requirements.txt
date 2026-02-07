@@ -4,8 +4,7 @@
 psycopg2-binary==2.9.9
 
 # ClickHouse provider для ETL
-# Примечание: официальный провайдер deprecated, используем clickhouse-connect
-clickhouse-connect==0.8.0
+airflow-clickhouse-plugin==1.6.0
 
 # Для работы с данными
 pandas==2.1.4
