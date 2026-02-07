@@ -3,7 +3,7 @@
 # Скрипт batch-трансформации данных: ODS → DDS → DM
 #
 # Назначение:
-#   Запускает SQL-скрипты из jobs/ для преобразования данных между слоями:
+#   Запускает SQL-скрипты из sql/dds и sql/dm для преобразования данных между слоями:
 #   1. ODS → DDS : Сборка сущностей из типизированных данных
 #   2. DDS → DM  : Обновление сводки по качеству данных (dq_summary)
 #
@@ -24,7 +24,9 @@ set -euo pipefail
 
 # Директория со скриптом
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JOBS_DIR="${SCRIPT_DIR}/../jobs"
+SQL_ROOT_DIR="${SCRIPT_DIR}/../sql"
+DDS_TRANSFORM_SQL="${SQL_ROOT_DIR}/dds/30_ods_to_dds.sql"
+DM_TRANSFORM_SQL="${SQL_ROOT_DIR}/dm/40_dds_to_dm.sql"
 
 # Параметры подключения
 COMPOSE_BIN="${COMPOSE_BIN:-docker compose}"
@@ -39,6 +41,19 @@ CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-123456}"
 if ! ${COMPOSE_BIN} ps | grep -q "${CLICKHOUSE_SERVICE}"; then
     echo "Ошибка: Сервис '${CLICKHOUSE_SERVICE}' не запущен."
     echo "Запустите сначала: make up"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Проверка: SQL-файлы batch существуют?
+# -----------------------------------------------------------------------------
+if [[ ! -f "${DDS_TRANSFORM_SQL}" ]]; then
+    echo "Ошибка: Не найден SQL-файл: ${DDS_TRANSFORM_SQL}"
+    exit 1
+fi
+
+if [[ ! -f "${DM_TRANSFORM_SQL}" ]]; then
+    echo "Ошибка: Не найден SQL-файл: ${DM_TRANSFORM_SQL}"
     exit 1
 fi
 
@@ -83,7 +98,7 @@ ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
     --database="${CLICKHOUSE_DB}" \
-    --multiquery < "${JOBS_DIR}/30_dds_refresh.sql"
+    --multiquery < "${DDS_TRANSFORM_SQL}"
 
 echo "  ✓ DDS обновлён"
 
@@ -105,7 +120,7 @@ ${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
     --user="${CLICKHOUSE_USER}" \
     --password="${CLICKHOUSE_PASSWORD}" \
     --database="${CLICKHOUSE_DB}" \
-    --multiquery < "${JOBS_DIR}/40_dm_refresh.sql"
+    --multiquery < "${DM_TRANSFORM_SQL}"
 
 echo "  ✓ DM обновлён"
 

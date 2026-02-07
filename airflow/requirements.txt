@@ -1,0 +1,7 @@
+# Airflow requirements для учебного ETL-проекта
+
+# Metadata DB для Airflow
+psycopg2-binary==2.9.9
+
+# ClickHouse operator/hook для DAG'ов
+airflow-clickhouse-plugin==1.6.0

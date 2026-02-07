@@ -369,11 +369,11 @@ sequenceDiagram
     K-->>User: ✅ Инфраструктура готова
 
     User->>Make: make ddl
-    Make->>CH: ddl/00_databases.sql
-    Make->>CH: ddl/10_stg.sql (Kafka Engine)
-    Make->>CH: ddl/20_ods.sql (MV)
-    Make->>CH: ddl/30_dds.sql
-    Make->>CH: ddl/40_dm.sql
+    Make->>CH: sql/ddl/00_databases.sql
+    Make->>CH: sql/ddl/stg/10_stg.sql (Kafka Engine)
+    Make->>CH: sql/ddl/ods/20_ods.sql (MV)
+    Make->>CH: sql/ddl/dds/30_dds.sql
+    Make->>CH: sql/ddl/dm/40_dm.sql
     CH-->>User: ✅ Структура БД создана
 
     User->>Make: make data
@@ -389,10 +389,10 @@ sequenceDiagram
     CH-->>User: ✅ Данные в STG/ODS
 
     User->>Make: make transform
-    Make->>CH: jobs/30_dds_refresh.sql
+    Make->>CH: sql/dds/30_ods_to_dds.sql
     CH->>ODS: argMax() — снапшот
     CH->>DDS: JOIN + INSERT
-    Make->>CH: jobs/40_dm_refresh.sql
+    Make->>CH: sql/dm/40_dds_to_dm.sql
     CH->>DM: DQ summary
     CH-->>User: ✅ DDS/DM обновлены
 ```
@@ -586,15 +586,25 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 
 ### Airflow-оркестрация
 
+Инфраструктура Airflow развёрнута и готова к использованию:
+
 ```python
-# dag.py
-with DAG('clickhouse_etl'):
-    ddl = BashOperator(task_id='ddl', bash_command='make ddl')
-    load = BashOperator(task_id='load', bash_command='make data')
-    transform = BashOperator(task_id='transform', bash_command='make transform')
-    
-    ddl >> load >> transform
+# dags/ddl_init_dag.py и dags/etl_pipeline_dag.py
+#
+# Учебный формат:
+# - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
+# - SQL-файлы вызываются по фиксированным путям;
+# - загрузка данных в Kafka (Этап 1) выполняется через `make data`.
+#
+# Основной demo-сценарий:
+# ddl_init -> make data -> etl_pipeline
 ```
+
+**Подключение к ClickHouse:**
+- Connection: `clickhouse_default`
+- URL: `clickhouse://default:123456@clickhouse:9000/default` (native TCP для Airflow plugin)
+- Provider/интеграция: `airflow-clickhouse-plugin` (в `airflow/requirements.txt`), задачи выполняются через `ClickHouseOperator`.
+- Примечание: Superset подключается к ClickHouse по HTTP (обычно `clickhouse+connect://...:8123/...`).
 
 ---
 
