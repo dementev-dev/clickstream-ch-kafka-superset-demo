@@ -216,7 +216,7 @@ services:
 
   superset:
     # image: apache/superset
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.superset
     restart: unless-stopped
@@ -227,14 +227,63 @@ services:
     volumes:
       - superset_data:/var/lib/superset
       - superset_config:/app/superset_home
+      - ./superset:/app/superset_init:ro
     environment:
       - SUPERSET_SECRET_KEY=9wc5+erMt60+lxrXDf3RjeIR+zONpEFusO00Np7JzfliMTI1e+RXnHcQ
       - TZ=Europe/Moscow
+      - DATABASE_DB=superset
+      - DATABASE_HOST=postgres-metadata
+      - DATABASE_PASSWORD=airflow
+      - DATABASE_USER=airflow
+      - DATABASE_PORT=5432
+      - DATABASE_DIALECT=postgresql
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+
+  # Superset initialization service
+  superset-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    user: "0:0"
+    networks:
+      - cs_dwh
+    volumes:
+      - superset_data:/var/lib/superset
+      - superset_config:/app/superset_home
+      - ./superset:/app/superset_init:ro
+    environment:
+      - SUPERSET_SECRET_KEY=9wc5+erMt60+lxrXDf3RjeIR+zONpEFusO00Np7JzfliMTI1e+RXnHcQ
+      - TZ=Europe/Moscow
+      - DATABASE_DB=superset
+      - DATABASE_HOST=postgres-metadata
+      - DATABASE_PASSWORD=airflow
+      - DATABASE_USER=airflow
+      - DATABASE_PORT=5432
+      - DATABASE_DIALECT=postgresql
+    command: >
+      bash -ceuo pipefail "
+        echo 'Waiting for PostgreSQL...' &&
+        sleep 10 &&
+        echo 'Initializing Superset DB...' &&
+        superset db upgrade &&
+        echo 'Creating admin user...' &&
+        superset fab create-admin --username admin --password admin --firstname Superset --lastname Admin --email admin@example.org || true &&
+        echo 'Initializing roles...' &&
+        superset init &&
+        echo 'Creating ClickHouse connection and datasets...' &&
+        python /app/superset_init/init_superset.py || true &&
+        echo 'Superset initialized successfully'
+      "
+    depends_on:
+      postgres-metadata:
+        condition: service_healthy
 
   # Kafka Exporter для мониторинга через Prometheus
   kafka-exporter:
