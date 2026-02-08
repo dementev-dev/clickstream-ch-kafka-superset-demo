@@ -93,7 +93,12 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 ### TL;DR после `git pull`
 
 ```bash
-docker compose up -d prometheus grafana
+# Быстрый вариант (make)
+make reload-monitoring
+
+# Или вручную:
+docker compose up -d prometheus grafana kafka-exporter
+docker compose restart prometheus
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload
@@ -127,23 +132,38 @@ curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
 Если прилетели изменения в `configs/grafana/provisioning/*` или `configs/prometheus.yml`, примените их так:
 
 ```bash
-# Поднять/обновить сервисы мониторинга
-docker compose up -d prometheus grafana
+# Рекомендуемый способ (через make)
+make reload-monitoring
 
-# Перечитать provisioning Grafana без рестарта контейнера
+# Или вручную:
+docker compose up -d prometheus grafana kafka-exporter
+docker compose restart prometheus
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload
+```
 
-# Быстрая проверка, что ресурсы применились
-curl -s -u admin:admin http://localhost:3000/api/datasources/name/Prometheus
-curl -s -u admin:admin http://localhost:3000/api/v1/provisioning/alert-rules
+Проверка результата:
+
+```bash
+# Дашборды и алерты
+curl -s -u admin:admin http://localhost:3000/api/v1/provisioning/alert-rules | grep -o '"title":"[^"]*"'
+
+# Kafka метрики
+curl -s http://localhost:9090/api/v1/targets | grep kafka
+curl -s http://localhost:9308/metrics | grep "^kafka_brokers"
 ```
 
 Если в пулле изменился `configs/prometheus_ch.xml`, дополнительно перезапустите ClickHouse:
 
 ```bash
 docker compose restart clickhouse
+```
+
+Если дашборд Kafka не загрузился (ошибка "Dashboard title cannot be empty" в логах), пересоздайте контейнер Grafana:
+
+```bash
+docker compose stop grafana && docker compose rm -f grafana && docker compose up -d grafana
 ```
 
 ### Дашборд ClickHouse Overview
@@ -158,7 +178,33 @@ URL: `http://localhost:3000/d/clickhouse-overview/clickhouse-overview`
 
 Принятое решение по метрикам: сверили naming через Context7 (`/clickhouse/clickhouse-docs`, раздел Prometheus interface) и заменили недоступные в `25.1` серии на фактически экспортируемые (`ClickHouseProfileEvents_InsertedRows`, `ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables`, `ClickHouseMetrics_Parts*`).
 
+### Дашборд Kafka Overview
+
+URL: `http://localhost:3000/d/kafka-overview/kafka-overview`
+
+| Раздел | Метрики |
+|--------|---------|
+| Cluster Health | Brokers Up, Topics Count, Total Partitions, Consumer Groups |
+| Throughput | Messages In/sec by Topic |
+| Consumers | Consumer Lag by Group, Consumer Lag Table |
+| Partitions | Partition Offsets (Current), Oldest vs Current Offset Gap |
+
+**Источник метрик:** `kafka-exporter` (danielqsj/kafka-exporter), формат конфигурации подтверждён через Context7 (`/danielqsj/kafka_exporter`, `/prometheus/docs`).
+
 ### Проверка метрик
+
+```bash
+# Prometheus собирает метрики ClickHouse
+curl -s "http://localhost:9090/api/v1/query?query=ClickHouseAsyncMetrics_MemoryResident"
+curl -s "http://localhost:9090/api/v1/query?query=ClickHouseProfileEvents_Query"
+
+# Prometheus собирает метрики Kafka
+curl -s "http://localhost:9090/api/v1/query?query=kafka_brokers"
+curl -s "http://localhost:9090/api/v1/query?query=kafka_consumer_group_lag"
+
+# Прямая проверка kafka-exporter
+curl -s http://localhost:9308/metrics | grep "^kafka_"
+```
 
 ```bash
 # Проверить, что Prometheus собирает метрики
@@ -170,12 +216,20 @@ curl -s "http://localhost:9090/api/v1/query?query=ClickHouseProfileEvents_Query"
 
 ### Алерты Grafana
 
-Provisioning-файл: `configs/grafana/provisioning/alerting/clickhouse-alert-rules.yml`
+**ClickHouse Alerts** — provisioning-файл: `configs/grafana/provisioning/alerting/clickhouse-alert-rules.yml`
 
 Настроены правила:
 - `ClickHouse Failed Queries Rate` — `rate(ClickHouseProfileEvents_FailedQuery[5m]) > 0` в течение `2m`
 - `ClickHouse Memory Resident High` — `MemoryResident / OSMemoryTotal * 100 > 85` в течение `5m`
 - `ClickHouse Parts Active High` — `ClickHouseMetrics_PartsActive > 500` в течение `10m`
+
+**Kafka Alerts** — provisioning-файл: `configs/grafana/provisioning/alerting/kafka-alert-rules.yml`
+
+Настроены правила:
+- `Kafka Broker Down` — `kafka_brokers < 1` в течение `1m`
+- `Kafka Consumer Lag High` — `kafka_consumer_group_lag > 10000` в течение `5m`
+- `Kafka No Messages Produced` — `rate(kafka_topic_partition_current_offset[5m]) < 0.1` в течение `10m`
+- `Kafka Consumer Group Missing` — пропала консьюмер-группа в течение `5m`
 
 Проверка и reload без рестарта контейнера:
 
@@ -189,9 +243,17 @@ curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/aler
 
 ### Troubleshooting мониторинга
 
+**Общие проблемы:**
 - **"No data" в Grafana**: проверить, что Prometheus видит target (`Status -> Targets` в UI)
-- **Метрики не обновляются**: ClickHouse экспортирует метрики на `0.0.0.0:9126` внутри сети Docker
 - **Dashboard не загрузился**: проверить логи Grafana — provisioning работает при первом старте контейнера
+
+**ClickHouse:**
+- **Метрики не обновляются**: ClickHouse экспортирует метрики на `0.0.0.0:9126` внутри сети Docker
+
+**Kafka:**
+- **`connection refused` к Kafka**: проверить, что kafka-exporter использует `kafka:29092` (внутренняя сеть), не `localhost:9092`
+- **Метрики Kafka не появляются**: проверить, что kafka-exporter подключился к Kafka — `docker compose logs kafka-exporter`
+- **Нет консьюмер-групп**: kafka-exporter показывает lag только при наличии активных консьюмеров с закоммиченными offset
 
 ## Troubleshooting
 

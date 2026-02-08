@@ -1,0 +1,281 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: kafka_health_group
+    folder: Kafka Alerts
+    interval: 1m
+    rules:
+      # --- Alert: Kafka Broker Down ---
+      - uid: kafka_broker_down
+        title: Kafka Broker Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: kafka_brokers
+              instant: false
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: "Kafka broker недоступен"
+          description: "Количество доступных брокеров: {{ $values.A }} (ожидается ≥ 1)"
+        labels:
+          severity: critical
+
+      # --- Alert: High Consumer Lag ---
+      - uid: kafka_consumer_lag_high
+        title: Kafka Consumer Lag High
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: kafka_consumer_group_lag
+              instant: false
+              intervalMs: 1000
+              legendFormat: "{{ group }} - {{ topic }}:{{ partition }}"
+              maxDataPoints: 43200
+              range: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 10000
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Высокий лаг консьюмера {{ $labels.group }}"
+          description: "Lag для {{ $labels.topic }}:{{ $labels.partition }} составляет {{ $values.A }} сообщений (порог: 10000)"
+        labels:
+          severity: warning
+
+      # --- Alert: No Messages Produced ---
+      - uid: kafka_no_messages_produced
+        title: Kafka No Messages Produced
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: rate(kafka_topic_partition_current_offset[5m])
+              instant: false
+              intervalMs: 1000
+              legendFormat: "{{ topic }}"
+              maxDataPoints: 43200
+              range: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: threshold
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "В топик {{ $labels.topic }} не поступают сообщения"
+          description: "Rate сообщений < 0.1 msg/sec в течение 10 минут"
+        labels:
+          severity: warning
+
+      # --- Alert: Consumer Group Missing ---
+      - uid: kafka_consumer_group_missing
+        title: Kafka Consumer Group Missing
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: count by (group) (kafka_consumer_group_lag)
+              instant: true
+              intervalMs: 1000
+              legendFormat: "{{ group }}"
+              maxDataPoints: 43200
+              range: false
+              refId: A
+        noDataState: Alerting
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Пропала консьюмер-группа"
+          description: "Консьюмер-группа не обнаружена в течение 5 минут"
+        labels:
+          severity: info
