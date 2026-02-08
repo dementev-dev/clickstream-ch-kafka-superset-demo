@@ -41,7 +41,19 @@ default_args = {
 # -----------------------------------------------------------------------------
 # SQL-файлы проекта
 # -----------------------------------------------------------------------------
-SQL_ROOT = Path(__file__).resolve().parents[1] / "sql"
+def resolve_sql_root() -> Path:
+    """Определяет корень SQL для контейнера и локального запуска."""
+    candidates = (
+        Path(__file__).resolve().parents[1] / "sql",  # /opt/airflow/sql в контейнере
+        Path(__file__).resolve().parents[2] / "sql",  # <repo>/sql при локальном запуске
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
+
+
+SQL_ROOT = resolve_sql_root()
 
 
 def load_sql_statements(relative_path: str) -> tuple[str, ...]:

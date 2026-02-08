@@ -115,7 +115,6 @@ flowchart LR
 
 ```
 .
-├── dags/             # Airflow DAGs для оркестрации
 ├── sql/
 │   ├── ddl/          # DDL по слоям
 │   │   ├── 00_databases.sql
@@ -128,6 +127,7 @@ flowchart LR
 │   └── dm/           # Batch SQL: DDS -> DM
 ├── scripts/          # Служебные shell-скрипты (legacy fallback, не основной путь)
 ├── airflow/          # Конфигурация Airflow
+│   ├── dags/         # Airflow DAGs для оркестрации
 │   └── requirements.txt
 ├── docs/             # Документация
 │   └── ARCHITECTURE.md   # Подробное описание слоёв

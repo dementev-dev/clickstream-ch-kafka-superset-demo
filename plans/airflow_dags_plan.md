@@ -146,18 +146,18 @@ ddl_init -> kafka_load -> etl_pipeline
   - публикации строк из `.jsonl` (`1 строка = 1 message value`).
 
 ### Общие helper-функции
-- `dags/utils/clickhouse_helpers.py`:
+- `airflow/dags/utils/clickhouse_helpers.py`:
   - `execute_sql(sql: str) -> None`
   - `execute_sql_file(path: str) -> None`
   - `fetch_one(sql: str) -> tuple`
-- `dags/utils/kafka_helpers.py`:
+- `airflow/dags/utils/kafka_helpers.py`:
   - `prepare_topics(reset: bool) -> None`
   - `load_jsonl(file_path: str, topic: str, limit: int) -> int`
   - `check_kafka_ready() -> None`
 
 ## Структура файлов
 ```text
-dags/
+airflow/dags/
 ├── __init__.py
 ├── ddl_init_dag.py           # отдельный DAG для DDL (обязателен)
 ├── kafka_load_dag.py         # отдельный DAG для ingest в Kafka (обязателен)
