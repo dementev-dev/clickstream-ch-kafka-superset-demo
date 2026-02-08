@@ -46,7 +46,7 @@
 | `check_clickhouse` | Проверка доступности CH (`SELECT 1`) | `PythonOperator` + `clickhouse-connect` |
 | `ddl_00_databases` | Создание БД | `sql/ddl/00_databases.sql` |
 | `ddl_10_stg` | STG + Kafka Engine + MV | `sql/ddl/stg/10_stg.sql` |
-| `ddl_20_ods` | ODS + MV STG→ODS + *_errors | `sql/ddl/ods/20_ods.sql` |
+| `ddl_20_ods` | ODS таблицы + drop legacy MV STG→ODS | `sql/ddl/ods/20_ods.sql` |
 | `ddl_30_dds` | Таблицы DDS | `sql/ddl/dds/30_dds.sql` |
 | `ddl_40_dm` | VIEW витрины DM | `sql/ddl/dm/40_dm.sql` |
 | `verify_schema` | Проверка ключевых таблиц/VIEW | SQL-check |
@@ -98,7 +98,7 @@ precheck >> prepare_topics >> [load_browser_events, load_location_events, load_d
 ## Дизайн DAG `etl_pipeline`
 ### Params (через Trigger DAG with config)
 - `full_refresh`: bool, default `true`.
-- `wait_ods_timeout_sec`: int, default `600`.
+- `wait_stg_timeout_sec`: int, default `600`.
 
 ### TaskGroup `precheck`
 | Task ID | Что делает | Реализация |
@@ -109,7 +109,8 @@ precheck >> prepare_topics >> [load_browser_events, load_location_events, load_d
 ### TaskGroup `transform`
 | Task ID | Что делает | Источник SQL |
 |---------|------------|--------------|
-| `wait_for_ods_data` | Ожидание строк в `ods.browser_event` | SQL-check |
+| `wait_for_stg_data` | Ожидание строк в `stg.*_raw` | SQL-check |
+| `load_ods` | Batch STG → ODS (основные таблицы + *_errors) | `sql/ods/20_stg_to_ods.sql` |
 | `check_ods_quality` | Базовые DQ-метрики ODS (ошибки/total) | SQL-check |
 | `truncate_dds_click` | Очистка `dds.click` при `full_refresh=true` | inline SQL |
 | `truncate_dds_event` | Очистка `dds.event` при `full_refresh=true` | inline SQL |
@@ -120,7 +121,7 @@ precheck >> prepare_topics >> [load_browser_events, load_location_events, load_d
 
 Зависимости:
 ```text
-wait_for_ods_data >> check_ods_quality >> [truncate_dds_click, truncate_dds_event] >> load_dds >> check_dds_integrity >> load_dm_summary >> validate_dm_summary
+wait_for_stg_data >> load_ods >> check_ods_quality >> [truncate_dds_click, truncate_dds_event] >> load_dds >> check_dds_integrity >> load_dm_summary >> validate_dm_summary
 ```
 
 ### Итоговая цепочка `etl_pipeline`
@@ -165,7 +166,7 @@ dags/
 ├── __init__.py
 ├── ddl_init_dag.py           # отдельный DAG для DDL (обязателен)
 ├── kafka_load_dag.py         # отдельный DAG для ingest в Kafka (обязателен)
-├── etl_pipeline_dag.py       # основной DAG ODS -> DDS -> DM (обязателен)
+├── etl_pipeline_dag.py       # основной DAG STG -> ODS -> DDS -> DM (обязателен)
 ├── dq_monitor_dag.py         # опциональный DAG мониторинга
 └── utils/
     ├── __init__.py
@@ -189,7 +190,7 @@ dags/
 ## Критерии готовности
 - Этап 1:
   - В Airflow UI видны DAG `ddl_init` и `etl_pipeline`.
-  - `etl_pipeline` падает с понятной ошибкой, если схема не применена или ODS пуста.
+  - `etl_pipeline` падает с понятной ошибкой, если схема не применена или STG пуста.
   - После прогона `make data -> etl_pipeline`:
     - в `ods.browser_event` есть строки;
     - в `dds.click` и `dds.event` есть строки;

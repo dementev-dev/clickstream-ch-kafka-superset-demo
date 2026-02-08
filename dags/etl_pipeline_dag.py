@@ -1,5 +1,5 @@
 """
-DAG ETL-процесса ODS -> DDS -> DM для учебного проекта.
+DAG ETL-процесса STG -> ODS -> DDS -> DM для учебного проекта.
 
 Принципы реализации:
 - SQL выполняется явными task на ClickHouseOperator;
@@ -80,10 +80,61 @@ SELECT
 
 SQL_CHECK_ODS_QUALITY = """
 SELECT
-    count() AS total_rows,
-    countIf(length(parse_errors) > 0) AS rows_with_errors,
-    round(if(count() = 0, 0, countIf(length(parse_errors) > 0) / count() * 100), 2) AS error_pct
-FROM ods.browser_event
+    table_name,
+    total_rows,
+    rows_with_errors,
+    round(if(total_rows = 0, 0, rows_with_errors / total_rows * 100), 2) AS error_pct
+FROM
+(
+    SELECT
+        'browser_event' AS table_name,
+        toFloat64(count()) AS total_rows,
+        toFloat64(countIf(length(parse_errors) > 0)) AS rows_with_errors
+    FROM ods.browser_event
+    UNION ALL
+    SELECT
+        'location_event',
+        toFloat64(count()),
+        toFloat64(countIf(length(parse_errors) > 0))
+    FROM ods.location_event
+    UNION ALL
+    SELECT
+        'device_by_click',
+        toFloat64(count()),
+        toFloat64(countIf(length(parse_errors) > 0))
+    FROM ods.device_by_click
+    UNION ALL
+    SELECT
+        'geo_by_click',
+        toFloat64(count()),
+        toFloat64(countIf(length(parse_errors) > 0))
+    FROM ods.geo_by_click
+    UNION ALL
+    SELECT
+        'browser_event_errors',
+        toFloat64(count()),
+        toFloat64(count())
+    FROM ods.browser_event_errors
+    UNION ALL
+    SELECT
+        'location_event_errors',
+        toFloat64(count()),
+        toFloat64(count())
+    FROM ods.location_event_errors
+    UNION ALL
+    SELECT
+        'device_by_click_errors',
+        toFloat64(count()),
+        toFloat64(count())
+    FROM ods.device_by_click_errors
+    UNION ALL
+    SELECT
+        'geo_by_click_errors',
+        toFloat64(count()),
+        toFloat64(count())
+    FROM ods.geo_by_click_errors
+)
+ORDER BY table_name
 """
 
 SQL_TRUNCATE_DDS_CLICK = "TRUNCATE TABLE dds.click"
@@ -115,21 +166,38 @@ def assert_schema_ready(**context) -> None:
         )
 
 
-def wait_for_ods_data(**context) -> None:
+def wait_for_stg_data(**context) -> None:
     """
-    Ожидает появления строк в ods.browser_event до заданного таймаута.
-    Таймаут берётся из dag_run.conf.wait_ods_timeout_sec или из params.
+    Ожидает появления строк в STG до заданного таймаута.
+    Таймаут берётся из dag_run.conf.wait_stg_timeout_sec (или legacy wait_ods_timeout_sec)
+    либо из params.
     """
     dag_run = context.get("dag_run")
     conf = dag_run.conf if dag_run else {}
-    timeout_sec = int(conf.get("wait_ods_timeout_sec", context["params"]["wait_ods_timeout_sec"]))
+    timeout_sec = int(
+        conf.get(
+            "wait_stg_timeout_sec",
+            conf.get(
+                "wait_ods_timeout_sec",
+                context["params"]["wait_stg_timeout_sec"],
+            ),
+        )
+    )
     poll_interval_sec = 10
 
     hook = ClickHouseHook(clickhouse_conn_id="clickhouse_default", database="default")
     started = time.monotonic()
 
     while True:
-        rows = hook.execute("SELECT count() FROM ods.browser_event")
+        rows = hook.execute(
+            """
+            SELECT
+                (SELECT count() FROM stg.browser_raw)
+                + (SELECT count() FROM stg.location_raw)
+                + (SELECT count() FROM stg.device_raw)
+                + (SELECT count() FROM stg.geo_raw) AS stg_rows_total
+            """
+        )
         count_rows = int(rows[0][0]) if rows else 0
         if count_rows > 0:
             return
@@ -137,8 +205,8 @@ def wait_for_ods_data(**context) -> None:
         elapsed = int(time.monotonic() - started)
         if elapsed >= timeout_sec:
             raise AirflowException(
-                f"Таймаут ожидания ODS истёк ({timeout_sec} сек). "
-                "Таблица ods.browser_event всё ещё пуста."
+                f"Таймаут ожидания STG истёк ({timeout_sec} сек). "
+                "Таблицы stg.*_raw всё ещё пусты."
             )
 
         time.sleep(poll_interval_sec)
@@ -167,7 +235,7 @@ def assert_dm_summary_not_empty(**context) -> None:
 
 with DAG(
     dag_id="etl_pipeline",
-    description="ETL ODS -> DDS -> DM для demo-проекта",
+    description="ETL STG -> ODS -> DDS -> DM для demo-проекта",
     default_args=default_args,
     schedule=None,
     start_date=datetime(2024, 1, 1),
@@ -177,7 +245,7 @@ with DAG(
     tags=["etl", "clickhouse", "demo"],
     params={
         "full_refresh": Param(True, type="boolean"),
-        "wait_ods_timeout_sec": Param(600, type="integer", minimum=30),
+        "wait_stg_timeout_sec": Param(600, type="integer", minimum=30),
     },
 ) as dag:
     with TaskGroup(group_id="precheck") as precheck:
@@ -203,9 +271,16 @@ with DAG(
         check_clickhouse >> check_schema_ready_sql >> check_schema_ready
 
     with TaskGroup(group_id="transform") as transform:
-        wait_for_ods_data_task = PythonOperator(
-            task_id="wait_for_ods_data",
-            python_callable=wait_for_ods_data,
+        wait_for_stg_data_task = PythonOperator(
+            task_id="wait_for_stg_data",
+            python_callable=wait_for_stg_data,
+        )
+
+        load_ods = ClickHouseOperator(
+            task_id="load_ods",
+            sql=load_sql_statements("ods/20_stg_to_ods.sql"),
+            clickhouse_conn_id="clickhouse_default",
+            database="default",
         )
 
         check_ods_quality = ClickHouseOperator(
@@ -274,7 +349,7 @@ with DAG(
             python_callable=assert_dm_summary_not_empty,
         )
 
-        wait_for_ods_data_task >> check_ods_quality >> choose_refresh_mode
+        wait_for_stg_data_task >> load_ods >> check_ods_quality >> choose_refresh_mode
         choose_refresh_mode >> truncate_dds_click >> truncate_dds_event >> truncate_complete
         choose_refresh_mode >> skip_truncate >> truncate_complete
         truncate_complete >> load_dds >> check_dds_integrity >> load_dm_summary >> validate_dm_summary_sql >> validate_dm_summary

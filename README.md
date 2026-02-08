@@ -9,7 +9,7 @@
 Фокус проекта: быстро показать работающий end-to-end сценарий и понятным языком объяснить, как устроены слои и почему пайплайн не падает на "грязных" данных.
 
 Коротко про поток:
-`data/*.jsonl` -> Kafka (1 строка = 1 сообщение) -> ClickHouse `stg` (сырые JSON) -> `ods` (типизация + DQ) -> Airflow batch -> `dds` (сущности) -> `dm` (витрины VIEW) -> Superset.
+`data/*.jsonl` -> Kafka (1 строка = 1 сообщение) -> ClickHouse `stg` (сырые JSON) -> Airflow batch `stg -> ods -> dds -> dm` -> Superset.
 
 ---
 
@@ -39,7 +39,7 @@ make data            # по умолчанию первые 50 строк
 # или: FULL=1 make data    # полный датасет (1000 строк)
 ```
 
-Запуск batch-трансформации (ODS -> DDS -> DM) в Airflow (если DAG выключен, сначала unpause):
+Запуск batch-трансформации (STG -> ODS -> DDS -> DM) в Airflow (если DAG выключен, сначала unpause):
 ```bash
 docker compose exec -T airflow-webserver airflow dags trigger etl_pipeline \
   --conf '{"full_refresh": true}'
@@ -98,8 +98,8 @@ flowchart TB
         DAG[DAG: ddl_init / etl_pipeline]
     end
 
-    Sources -->|make data| Kafka -->|MV| STG -->|MV| ODS -->|Batch SQL| DDS -->|VIEW| DM
-    DAG -.->|оркестрация| ODS & DDS & DM
+    Sources -->|make data| Kafka -->|MV| STG -->|Batch SQL| ODS -->|Batch SQL| DDS -->|VIEW| DM
+    DAG -.->|оркестрация| STG & ODS & DDS & DM
 ```
 
 Особенность задания про "грязные данные": парсинг не валит pipeline, ошибки фиксируются в `ods.*_errors` и в поле `parse_errors`.
@@ -120,6 +120,7 @@ flowchart TB
 │   │   ├── ods/20_ods.sql
 │   │   ├── dds/30_dds.sql
 │   │   └── dm/40_dm.sql
+│   ├── ods/          # Batch SQL: STG -> ODS
 │   ├── dds/          # Batch SQL: ODS -> DDS
 │   └── dm/           # Batch SQL: DDS -> DM
 ├── scripts/          # Автоматизация (apply ddl, load data, run batch)
@@ -142,7 +143,7 @@ flowchart TB
 | `make ddl` | Применить DDL в ClickHouse (вне Airflow) |
 | `make data` | Загрузить данные в Kafka (50 строк) |
 | `FULL=1 make data` | Загрузить полный датасет |
-| `make transform` | Запустить batch-процесс (вне Airflow) |
+| `make transform` | Запустить batch-процесс `STG -> ODS -> DDS -> DM` (вне Airflow) |
 
 Примечания про сохранность данных:
 - Данные ClickHouse сохраняются в Docker volume `clickhouse-data`.
@@ -216,7 +217,7 @@ flowchart LR
 
 Реализовано (Этап 1):
 - DAG `ddl_init`: последовательное применение DDL + проверка схемы.
-- DAG `etl_pipeline`: precheck, ожидание данных в ODS, пересчёт DDS/DM, базовые проверки.
+- DAG `etl_pipeline`: precheck, ожидание данных в STG, batch-пересчёт ODS/DDS/DM, базовые проверки.
 - Устойчивость к "грязным" данным: ошибки парсинга сохраняются в ODS, а не валят ingest.
 
 В планах (не требуется для MVP задания):

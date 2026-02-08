@@ -44,8 +44,10 @@ flowchart LR
         S2[location_raw]
         S3[device_raw]
         S4[geo_raw]
-        MV1[mv_*_to_ods]
-        MV2[mv_*_to_errors]
+    end
+
+    subgraph AF["⚙️ Airflow"]
+        B1[load_ods<br/>sql/ods/20_stg_to_ods.sql]
     end
 
     subgraph ODS["🔧 ODS"]
@@ -68,12 +70,20 @@ flowchart LR
         DM4[v_top_pages]
     end
 
-    BE --> K1 --> S1 --> MV1 --> O1 --> DE1 --> DM1
-    LE --> K2 --> S2 --> MV1 --> O2 --> DE1
-    DE --> K3 --> S3 --> MV1 --> O3 --> DC1 --> DM1
-    GE --> K4 --> S4 --> MV1 --> O4 --> DC1
-    
-    S1 & S2 & S3 & S4 --> MV2 -.-> OE
+    BE --> K1 --> S1
+    LE --> K2 --> S2
+    DE --> K3 --> S3
+    GE --> K4 --> S4
+
+    S1 & S2 & S3 & S4 -->|Batch SQL| B1
+    B1 --> O1 & O2 & O3 & O4
+    B1 -.-> OE
+    O1 --> DE1
+    O2 --> DE1
+    O3 --> DC1
+    O4 --> DC1
+    DE1 --> DM1
+    DC1 --> DM1
     DE1 --> DM2 & DM3 & DM4
     DC1 --> DM2 & DM3 & DM4
 ```
@@ -106,7 +116,7 @@ flowchart TB
         DM_T["VIEW для BI<br/>(Superset/Grafana)"]
     end
 
-    RAW -->|kafka-console-producer| KAFKA -->|MV| STG_T -->|MV| ODS_T
+    RAW -->|kafka-console-producer| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
     ODS_T -->|argMax + JOIN| DDS_T -->|VIEW| DM_T
     ODS_T -.->|ошибки| DQ
 ```
@@ -159,14 +169,14 @@ CREATE TABLE stg.browser_raw (
 | `geo_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Гео-данные |
 | `*_errors` | — | MergeTree | Строки с битыми ключами |
 
-**Materialized Views для обработки ошибок:**
+**Batch шаг наполнения ODS:**
 
-| MV | Назначение |
-|----|-----------|
-| `mv_browser_raw_to_ods_errors` | Переносит строки с ошибками в `browser_event_errors` |
-| `mv_location_raw_to_ods_errors` | Переносит строки с ошибками в `location_event_errors` |
-| `mv_device_raw_to_ods_errors` | Переносит строки с ошибками в `device_by_click_errors` |
-| `mv_geo_raw_to_ods_errors` | Переносит строки с ошибками в `geo_by_click_errors` |
+| Шаг | Назначение |
+|-----|-----------|
+| `load_ods` (`sql/ods/20_stg_to_ods.sql`) | Полная пересборка ODS из STG в рамках DAG `etl_pipeline` |
+| `TRUNCATE ods.*` | Очистка перед пересборкой для детерминированного результата |
+| `INSERT ... SELECT` | Типизация валидных строк в основные ODS таблицы |
+| `INSERT ... SELECT` в `*_errors` | Сохранение строк с критичными ошибками парсинга |
 
 **Логика разделения:**
 - **Основная таблица**: строки с валидными ключами (`WHERE key IS NOT NULL`)
@@ -203,7 +213,7 @@ GROUP BY error;
 **Почему так:**
 - **Изоляция источников**: изменения в одном не ломают другие
 - **Версионирование**: `ReplacingMergeTree` хранит последнюю версию по `src_ingest_ts`
-- **Nullable ключи**: `allow_nullable_key = 1` позволяет хранить "битые" строки
+- **Управляемость**: шаг `load_ods` виден в Airflow, есть task-level мониторинг и ретраи
 
 ---
 
@@ -356,6 +366,7 @@ FROM ...
 sequenceDiagram
     participant User as Пользователь
     participant Make as Makefile
+    participant Airflow as Airflow
     participant K as Kafka
     participant CH as ClickHouse
     participant STG as stg.*_raw
@@ -371,7 +382,7 @@ sequenceDiagram
     User->>Make: make ddl
     Make->>CH: sql/ddl/00_databases.sql
     Make->>CH: sql/ddl/stg/10_stg.sql (Kafka Engine)
-    Make->>CH: sql/ddl/ods/20_ods.sql (MV)
+    Make->>CH: sql/ddl/ods/20_ods.sql (таблицы ODS + drop legacy MV)
     Make->>CH: sql/ddl/dds/30_dds.sql
     Make->>CH: sql/ddl/dm/40_dm.sql
     CH-->>User: ✅ Структура БД создана
@@ -384,17 +395,17 @@ sequenceDiagram
     end
     K->>CH: Потребление сообщений
     CH->>STG: INSERT через MV
-    STG->>ODS: INSERT через MV (типизация)
     K-->>User: ✅ Данные в Kafka
-    CH-->>User: ✅ Данные в STG/ODS
+    CH-->>User: ✅ Данные в STG
 
-    User->>Make: make transform
-    Make->>CH: sql/dds/30_ods_to_dds.sql
+    User->>Airflow: Trigger etl_pipeline
+    Airflow->>CH: sql/ods/20_stg_to_ods.sql
+    Airflow->>CH: sql/dds/30_ods_to_dds.sql
     CH->>ODS: argMax() — снапшот
     CH->>DDS: JOIN + INSERT
-    Make->>CH: sql/dm/40_dds_to_dm.sql
+    Airflow->>CH: sql/dm/40_dds_to_dm.sql
     CH->>DM: DQ summary
-    CH-->>User: ✅ DDS/DM обновлены
+    CH-->>User: ✅ ODS/DDS/DM обновлены
 ```
 
 ---
@@ -506,7 +517,7 @@ flowchart LR
 
 **Решение:**
 1. Включаем `allow_nullable_key = 1` в `ReplacingMergeTree`
-2. Фильтруем NULL в MV (`WHERE key IS NOT NULL` → основная таблица)
+2. Фильтруем NULL в batch SQL (`WHERE key IS NOT NULL` → основная таблица)
 3. Отдельные `*_errors` таблицы для NULL-ключей
 
 ### Почему `ReplacingMergeTree`?
@@ -528,18 +539,16 @@ flowchart LR
 
 **Решение:**
 1. **Основная таблица**: только валидные строки (`WHERE key IS NOT NULL`)
-2. **Таблица ошибок**: строки с невалидными ключами через отдельные MV
+2. **Таблица ошибок**: строки с невалидными ключами через отдельные `INSERT ... SELECT`
 3. **DQ-метрики**: массив `parse_errors` для аудита
 
 ```sql
 -- Основная таблица
-CREATE MV mv_browser_raw_to_ods_browser_event
-TO ods.browser_event
+INSERT INTO ods.browser_event
 SELECT ... FROM stg.browser_raw WHERE event_id IS NOT NULL;
 
 -- Таблица ошибок
-CREATE MV mv_browser_raw_to_ods_errors
-TO ods.browser_event_errors
+INSERT INTO ods.browser_event_errors
 SELECT ... FROM stg.browser_raw WHERE event_id IS NULL;
 ```
 
