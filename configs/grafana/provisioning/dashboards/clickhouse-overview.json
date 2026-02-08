@@ -116,7 +116,11 @@
       },
       "targets": [
         {
-          "expr": "rate(ClickHouseProfileEvents_OSCPUVirtualTimeMicroseconds[1m]) / 1000000 / scalar(count({__name__=~\"ClickHouseAsyncMetrics_CPUFrequencyMHz_.*\"})) * 100",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus_uid"
+          },
+          "expr": "delta(ClickHouseProfileEvents_OSCPUVirtualTimeMicroseconds[1m]) / 60 / 1000000 / scalar(count({__name__=~\"ClickHouseAsyncMetrics_CPUFrequencyMHz_.*\"})) * 100",
           "refId": "A"
         }
       ],
