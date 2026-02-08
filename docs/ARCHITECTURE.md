@@ -25,100 +25,79 @@
 
 ```mermaid
 flowchart LR
-    subgraph Sources["📁 Источники (JSONL)"]
-        BE[browser_events]
-        LE[location_events]
-        DE[device_events]
-        GE[geo_events]
+    subgraph AF["Airflow"]
+        DAG1["ddl_init"]
+        DAG2["kafka_load"]
+        DAG3["etl_pipeline"]
     end
 
-    subgraph Kafka["🚀 Kafka"]
-        K1[browser_events]
-        K2[location_events]
-        K3[device_events]
-        K4[geo_events]
+    subgraph Kafka["Kafka"]
+        K[4 топика]
     end
 
-    subgraph STG["📦 STG"]
-        S1[browser_raw]
-        S2[location_raw]
-        S3[device_raw]
-        S4[geo_raw]
+    subgraph STG["STG"]
+        S[*_raw таблицы]
     end
 
-    subgraph AF["⚙️ Airflow"]
-        B1[load_ods<br/>sql/ods/20_stg_to_ods.sql]
-    end
-
-    subgraph ODS["🔧 ODS"]
-        O1[browser_event]
-        O2[location_event]
-        O3[device_by_click]
-        O4[geo_by_click]
+    subgraph ODS["ODS"]
+        O[*_event таблицы]
         OE[error_tables]
     end
 
-    subgraph DDS["🎯 DDS"]
-        DE1[event]
-        DC1[click]
+    subgraph DDS["DDS"]
+        D1[event]
+        D2[click]
     end
 
-    subgraph DM["📊 DM"]
-        DM1[v_events_enriched]
-        DM2[v_daily_traffic]
-        DM3[v_utm_effectiveness]
-        DM4[v_top_pages_daily]
+    subgraph DM["DM"]
+        V[витрины VIEW]
     end
 
-    BE --> K1 --> S1
-    LE --> K2 --> S2
-    DE --> K3 --> S3
-    GE --> K4 --> S4
+    DAG2 -->|JSONL| K -->|MV| S
+    S -->|batch| O
+    O -->|argMax + JOIN| D1 & D2
+    O -.->|ошибки| OE
+    D1 & D2 -->|VIEW| V
 
-    S1 & S2 & S3 & S4 -->|Batch SQL| B1
-    B1 --> O1 & O2 & O3 & O4
-    B1 -.-> OE
-    O1 --> DE1
-    O2 --> DE1
-    O3 --> DC1
-    O4 --> DC1
-    DE1 --> DM1
-    DC1 --> DM1
-    DE1 --> DM2 & DM3 & DM4
-    DC1 --> DM2 & DM3 & DM4
+    DAG1 -.->|DDL| STG & ODS & DDS & DM
+    DAG3 -.->|batch| ODS & DDS
 ```
 
 ### Слои и их назначение
 
 ```mermaid
-flowchart TB
-    subgraph L0["📝 Источники"]
-        RAW["JSON файлы (1000 строк)"]
+flowchart LR
+    subgraph AF["Airflow"]
+        DAG1["ddl_init"]
+        DAG2["kafka_load"]
+        DAG3["etl_pipeline"]
     end
 
-    subgraph L1["📦 STG - Staging"]
-        direction LR
+    subgraph L1["STG"]
         KAFKA["Kafka Engine"]
-        STG_T["*_raw таблицы<br/>(MergeTree)"]
+        STG_T["*_raw таблицы"]
     end
 
-    subgraph L2["🔧 ODS - Операционный слой"]
-        direction LR
-        ODS_T["Типизированные таблицы<br/>(ReplacingMergeTree)"]
-        DQ["parse_errors<br/>DQ-метрики"]
+    subgraph L2["ODS"]
+        ODS_T["Типизированные таблицы"]
+        DQ["parse_errors"]
     end
 
-    subgraph L3["🎯 DDS - Детальный слой"]
-        DDS_T["event + click<br/>(Batch SQL)"]
+    subgraph L3["DDS"]
+        DDS_T["event + click"]
     end
 
-    subgraph L4["📊 DM - Витрины"]
-        DM_T["VIEW для BI<br/>(Superset/Grafana)"]
+    subgraph L4["DM"]
+        DM_T["VIEW"]
     end
 
-    RAW -->|Airflow DAG kafka_load| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
+    DAG2 -->|JSONL| KAFKA -->|MV| STG_T
+    STG_T -->|batch| ODS_T
     ODS_T -->|argMax + JOIN| DDS_T -->|VIEW| DM_T
     ODS_T -.->|ошибки| DQ
+
+    DAG1 -.->|DDL| L1 & L2 & L3 & L4
+    DAG3 -.->|batch| ODS_T & DDS_T
 ```
 
 ---
@@ -476,8 +455,8 @@ flowchart LR
         EV["event"]
     end
 
-    B -->|JOIN по event_id| EV
-    L -->|JOIN по event_id| EV
+    B -->|JOIN event_id| EV
+    L -->|JOIN event_id| EV
 ```
 
 **click** (device + geo) с поддержкой partial data:
@@ -489,7 +468,7 @@ flowchart LR
     end
 
     subgraph BUILD["Batch SQL"]
-        U["UNION DISTINCT<br/>click_id"]
+        U["UNION DISTINCT click_id"]
         J["LEFT JOIN"]
     end
 

@@ -80,31 +80,29 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 ## Архитектура (в двух словах)
 
 ```mermaid
-flowchart TB
-    subgraph Sources["JSONL файлы"]
-        BE[browser_events.jsonl]
-        LE[location_events.jsonl]
-        DE[device_events.jsonl]
-        GE[geo_events.jsonl]
+flowchart LR
+    subgraph AF["Airflow"]
+        D1["ddl_init"]
+        D2["kafka_load"]
+        D3["etl_pipeline"]
     end
 
     subgraph Kafka["Kafka"]
-        KT[Топики]
+        Topics[4 топика]
     end
 
     subgraph CH["ClickHouse"]
-        STG["stg: сырьё + Kafka MV"]
-        ODS["ods: типизация + DQ"]
-        DDS["dds: сущности"]
-        DM["dm: витрины (VIEW)"]
+        STG["STG: сырые данные"]
+        ODS["ODS: типизация + DQ"]
+        DDS["DDS: сущности"]
+        DM["DM: витрины VIEW"]
     end
 
-    subgraph Airflow["Airflow"]
-            DAG[DAG: ddl_init / kafka_load / etl_pipeline]
-        end
+    D2 -->|загрузка JSONL| Kafka -->|Kafka MV| STG
+    STG -->|batch| ODS -->|batch| DDS -->|VIEW| DM
 
-    Sources -->|kafka_load| Kafka -->|MV| STG -->|Batch SQL| ODS -->|Batch SQL| DDS -->|VIEW| DM
-    DAG -.->|оркестрация| STG & ODS & DDS & DM
+    D1 -.->|DDL| CH
+    D3 -.->|batch| ODS & DDS
 ```
 
 Особенность задания про "грязные данные": парсинг не валит pipeline, ошибки фиксируются в `ods.*_errors` и в поле `parse_errors`.
