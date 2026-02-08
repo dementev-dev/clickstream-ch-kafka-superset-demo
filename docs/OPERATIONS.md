@@ -90,6 +90,17 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 
 ## Мониторинг
 
+### TL;DR после `git pull`
+
+```bash
+docker compose up -d prometheus grafana
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload
+```
+
+Если менялся `configs/prometheus_ch.xml`: `docker compose restart clickhouse`.
+
 ### Prometheus + Grafana для ClickHouse
 
 Стек мониторинга поднимается вместе с остальной инфраструктурой:
@@ -110,6 +121,30 @@ curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
   - Datasource Prometheus автоматически настроен
   - Dashboard "ClickHouse Overview" загружается при старте
   - Alert rules для ClickHouse загружаются при старте
+
+### После `git pull`: быстрый апдейт мониторинга
+
+Если прилетели изменения в `configs/grafana/provisioning/*` или `configs/prometheus.yml`, примените их так:
+
+```bash
+# Поднять/обновить сервисы мониторинга
+docker compose up -d prometheus grafana
+
+# Перечитать provisioning Grafana без рестарта контейнера
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload
+
+# Быстрая проверка, что ресурсы применились
+curl -s -u admin:admin http://localhost:3000/api/datasources/name/Prometheus
+curl -s -u admin:admin http://localhost:3000/api/v1/provisioning/alert-rules
+```
+
+Если в пулле изменился `configs/prometheus_ch.xml`, дополнительно перезапустите ClickHouse:
+
+```bash
+docker compose restart clickhouse
+```
 
 ### Дашборд ClickHouse Overview
 
