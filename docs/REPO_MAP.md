@@ -32,7 +32,16 @@
 
 - `data/*.jsonl` — исходные данные (могут быть грязными)
 - `configs/` — конфиги ClickHouse, Prometheus, Grafana
+- `configs/prometheus.yml` — конфигурация Prometheus (scrape targets для ClickHouse, Kafka, Airflow)
+- `configs/statsd_mapping.yml` — маппинг StatsD → Prometheus метрик для Airflow
+- `configs/default_user.xml` — пользователь ClickHouse (default/123456)
+- `configs/prometheus_ch.xml` — встроенный Prometheus endpoint ClickHouse
 - `configs/grafana/provisioning/alerting/clickhouse-alert-rules.yml` — правила алертинга Grafana для ClickHouse
+- `configs/grafana/provisioning/alerting/kafka-alert-rules.yml` — правила алертинга Grafana для Kafka
+- `configs/grafana/provisioning/alerting/airflow-alert-rules.yml` — правила алертинга Grafana для Airflow
+- `configs/grafana/provisioning/dashboards/clickhouse-overview.json` — дашборд ClickHouse
+- `configs/grafana/provisioning/dashboards/kafka-overview.json` — дашборд Kafka
+- `configs/grafana/provisioning/dashboards/airflow-overview.json` — дашборд Airflow
 
 ## Документация
 
@@ -47,3 +56,5 @@
 - `plans/clickhouse_ddl.md` — исходный план (inline DDL)
 - `plans/runbook.md` — ранний runbook
 - `plans/kafka_ingest_plan.md` — ранний план Kafka ingest
+- `plans/monitoring_airflow_plan.md` — план подключения Airflow мониторинга
+- `plans/monitoring_kafka_plan.md` — план подключения Kafka мониторинга
