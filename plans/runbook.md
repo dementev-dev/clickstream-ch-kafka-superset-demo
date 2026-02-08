@@ -1,107 +1,87 @@
-# Runbook: запуск демо и загрузка данных
+# Runbook: Airflow-first запуск демо
 
-Этот документ фиксирует порядок действий и `make`‑таргеты. Он не описывает внутренности ClickHouse‑слоёв (это в `plans/clickhouse_ddl.md`).
+Документ фиксирует канонический пользовательский сценарий через Airflow DAG'и.
+Внутренности слоёв ClickHouse описаны в `plans/clickhouse_ddl.md` и `docs/ARCHITECTURE.md`.
 
 ## Предпосылки
 
 - Docker + Docker Compose.
-- Доступ к Docker daemon (если `docker compose ...` пишет `permission denied ... /var/run/docker.sock`, добавьте пользователя в группу `docker` или запускайте команды с правами, принятыми в вашей среде).
+- Доступ к Docker daemon.
 
-## Быстрый сценарий
+## Канонический сценарий (через Airflow)
 
 1) Поднять инфраструктуру:
 
 ```bash
 make up
+docker compose ps
 ```
 
-2) Залить данные в Kafka (два варианта):
+2) Инициализировать схему ClickHouse:
 
-**Вариант А: Через Airflow DAG `kafka_load` (рекомендуется, фаза 2)**
 ```bash
-# Через CLI — полная загрузка по умолчанию
+docker compose exec -T airflow-webserver airflow dags trigger ddl_init
+```
+
+3) Загрузить данные в Kafka через DAG `kafka_load`:
+
+```bash
+# Рекомендуется для демо: небольшой срез
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"limit": 50, "reset_topics": true}'
+
+# Полная загрузка (limit=0 по умолчанию)
 docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
   --conf '{"reset_topics": true}'
-
-# Ограниченная загрузка — первые 100 строк
-docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
-  --conf '{"limit": 100, "reset_topics": true}'
-
-# Или через UI: Airflow → DAGs → kafka_load → Trigger DAG with config
 ```
 
-Параметры `kafka_load`:
-- `limit` — количество строк (default: 0 — все строки)
-- `reset_topics` — пересоздать топики (default: true)
-
-**Вариант Б: Через shell-скрипт `make data` (устаревший)**
-```bash
-make data
-```
-
-`make data` не зависит от ClickHouse/DDL — достаточно, чтобы Kafka была поднята.
-
-3) Применить DDL в ClickHouse:
+4) Запустить ETL:
 
 ```bash
-make ddl
+docker compose exec -T airflow-webserver airflow dags trigger etl_pipeline \
+  --conf '{"full_refresh": true}'
 ```
 
-## Make таргеты
-
-- `make up` — `docker compose up -d` (поднимает весь стек из `docker-compose.yml`).
-- `make ddl` — применяет исполняемые SQL-файлы из `sql/ddl/*` в контейнер ClickHouse через `clickhouse-client`.
-- `make data` — пересоздаёт топики (по умолчанию) и публикует события из `data/*.jsonl` в Kafka (1 строка = 1 Kafka message value).
-- `make transform` — выполняет batch-процесс `STG -> ODS -> DDS -> DM` через `scripts/run_batch.sh`.
-
-План реализации механики заливки (дизайн/решения): `plans/kafka_ingest_plan.md`.
-
-План Airflow DAG'ов: `plans/airflow_dags_plan.md`.
-
-## Загрузка данных в Kafka (`make data`)
-
-### Топики
-
-Скрипт использует фиксированный маппинг:
-
-- `data/browser_events.jsonl` → `browser_events`
-- `data/location_events.jsonl` → `location_events`
-- `data/device_events.jsonl` → `device_events`
-- `data/geo_events.jsonl` → `geo_events`
-
-### Режимы загрузки
-
-- По умолчанию — “debug срез”: первые 50 строк каждого файла.
-- Полная загрузка — весь файл.
-
-Параметры (env):
-
-- `LIMIT` — сколько строк брать из каждого `.jsonl`. По умолчанию загружаются все записи (весь файл).
-  Для ограничения используйте `LIMIT=50` или `LIMIT=100`.
-- `RESET_TOPICS` — если `RESET_TOPICS=1` (по умолчанию), топики удаляются и создаются заново с теми же именами.
-- `BOOTSTRAP_SERVER` — bootstrap для Kafka *изнутри kafka‑контейнера* (по умолчанию `kafka:29092`).
-
-Примеры:
+5) Проверить результат:
 
 ```bash
-# Загрузить все данные (по умолчанию)
-make data
-
-# Быстрый тест — 50 строк на поток
-LIMIT=50 make data
-
-# Ограниченная загрузка — 100 строк на поток
-LIMIT=100 make data
-
-# Дозалить данные без пересоздания топиков
-RESET_TOPICS=0 make data
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 \
+  --query "SELECT count() FROM stg.browser_raw"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 \
+  --query "SELECT count() FROM ods.browser_event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 \
+  --query "SELECT count() FROM dds.event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 \
+  --query "SELECT * FROM dm.dq_summary ORDER BY layer, table_name, check_name"
 ```
 
-## Применение DDL в ClickHouse (`make ddl`)
+## Параметры DAG'ов
 
-Скрипт исполняет SQL-файлы из `sql/ddl/*` по фиксированному порядку. Для `ENGINE = Kafka` важно, чтобы `kafka_broker_list` был доступен из контейнера ClickHouse.
+- `ddl_init`:
+  - `verify_only` (bool, default: `false`) — только проверка схемы, без применения DDL.
+- `kafka_load`:
+  - `limit` (int, default: `0`) — количество строк на поток (`0` = весь файл).
+  - `reset_topics` (bool, default: `true`) — удалить и создать топики заново.
+- `etl_pipeline`:
+  - `full_refresh` (bool, default: `true`) — очищать DDS перед загрузкой.
+  - `wait_stg_timeout_sec` (int, default: `600`) — таймаут ожидания данных в STG.
 
-В текущем compose:
+## Роль Make-таргетов
 
-- для соединений “контейнер → Kafka” используйте `kafka:29092`;
-- `localhost:9092` подходит только для клиентов на хосте.
+- `make up` — основной способ поднять стек.
+- `make ddl`, `make transform` — технический fallback для низкоуровневой диагностики вне Airflow.
+- Загрузка в Kafka в runbook выполняется только через DAG `kafka_load`.
+
+## Важные примечания
+
+- Для связей контейнеров используйте `kafka:29092` (не `localhost:9092`).
+- После `docker compose down -v` нужно заново выполнить:
+  1. `ddl_init`
+  2. `kafka_load`
+  3. `etl_pipeline`
+
+## Связанные документы
+
+- План ingest: `plans/kafka_ingest_plan.md`
+- План DAG'ов: `plans/airflow_dags_plan.md`
+- Архитектура: `docs/ARCHITECTURE.md`

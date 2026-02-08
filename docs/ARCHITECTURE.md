@@ -67,7 +67,7 @@ flowchart LR
         DM1[v_events_enriched]
         DM2[v_daily_traffic]
         DM3[v_utm_effectiveness]
-        DM4[v_top_pages]
+        DM4[v_top_pages_daily]
     end
 
     BE --> K1 --> S1
@@ -116,7 +116,7 @@ flowchart TB
         DM_T["VIEW для BI<br/>(Superset/Grafana)"]
     end
 
-    RAW -->|kafka_load DAG / kafka-console-producer| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
+    RAW -->|Airflow DAG kafka_load| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
     ODS_T -->|argMax + JOIN| DDS_T -->|VIEW| DM_T
     ODS_T -.->|ошибки| DQ
 ```
@@ -167,7 +167,7 @@ CREATE TABLE stg.browser_raw (
 | `location_event` | event_id | ReplacingMergeTree(src_ingest_ts) | Данные страниц |
 | `device_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Устройства |
 | `geo_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Гео-данные |
-| `*_errors` | — | MergeTree | Строки с битыми ключами |
+| `*_errors` | — | MergeTree | Строки с критичными ошибками парсинга |
 
 **Batch шаг наполнения ODS:**
 
@@ -179,8 +179,8 @@ CREATE TABLE stg.browser_raw (
 | `INSERT ... SELECT` в `*_errors` | Сохранение строк с критичными ошибками парсинга |
 
 **Логика разделения:**
-- **Основная таблица**: строки с валидными ключами (`WHERE key IS NOT NULL`)
-- **Таблица ошибок**: строки с невалидными ключами (`WHERE key IS NULL`)
+- **Основная таблица**: строки с валидным business key (`WHERE key IS NOT NULL`).
+- **Таблица ошибок**: строки с критичными ошибками (невалидный key, timestamp/координаты и т.п.) через отдельный `INSERT ... SELECT`.
 
 **Пример структуры:**
 ```sql
@@ -365,7 +365,7 @@ FROM ...
 ```mermaid
 sequenceDiagram
     participant User as Пользователь
-    participant Make as Makefile
+    participant Compose as Docker Compose
     participant Airflow as Airflow
     participant K as Kafka
     participant CH as ClickHouse
@@ -374,24 +374,24 @@ sequenceDiagram
     participant DDS as dds.*
     participant DM as dm.*
 
-    User->>Make: make up
-    Make->>K: docker compose up kafka
-    Make->>CH: docker compose up clickhouse
-    K-->>User: ✅ Инфраструктура готова
+    User->>Compose: make up
+    Compose->>K: docker compose up -d kafka
+    Compose->>CH: docker compose up -d clickhouse
+    Compose->>Airflow: docker compose up -d airflow-*
+    Compose-->>User: ✅ Инфраструктура готова
 
-    User->>Make: make ddl
-    Make->>CH: sql/ddl/00_databases.sql
-    Make->>CH: sql/ddl/stg/10_stg.sql (Kafka Engine)
-    Make->>CH: sql/ddl/ods/20_ods.sql (таблицы ODS + drop legacy MV)
-    Make->>CH: sql/ddl/dds/30_dds.sql
-    Make->>CH: sql/ddl/dm/40_dm.sql
+    User->>Airflow: Trigger ddl_init
+    Airflow->>CH: sql/ddl/00_databases.sql
+    Airflow->>CH: sql/ddl/stg/10_stg.sql (Kafka Engine + MV)
+    Airflow->>CH: sql/ddl/ods/20_ods.sql
+    Airflow->>CH: sql/ddl/dds/30_dds.sql
+    Airflow->>CH: sql/ddl/dm/40_dm.sql
     CH-->>User: ✅ Структура БД создана
 
-    User->>Make: make data
-    Make->>K: load_kafka_data.sh
-    K->>K: Создание топиков
+    User->>Airflow: Trigger kafka_load
+    Airflow->>K: precheck + prepare_topics
     loop 4 файла
-        Make->>K: kafka-console-producer
+        Airflow->>K: KafkaProducer.send(topic, json_line)
     end
     K->>CH: Потребление сообщений
     CH->>STG: INSERT через MV
@@ -535,11 +535,11 @@ flowchart LR
 
 ### Обработка ошибок в ODS
 
-**Проблема:** Грязные данные с невалидными ключами (NULL event_id/click_id).
+**Проблема:** Грязные данные могут содержать не только невалидные ключи, но и невалидные timestamp/координаты/ID.
 
 **Решение:**
-1. **Основная таблица**: только валидные строки (`WHERE key IS NOT NULL`)
-2. **Таблица ошибок**: строки с невалидными ключами через отдельные `INSERT ... SELECT`
+1. **Основная таблица**: строки с валидным business key (`WHERE key IS NOT NULL`)
+2. **Таблица ошибок**: строки с критичными ошибками парсинга через отдельные `INSERT ... SELECT`
 3. **DQ-метрики**: массив `parse_errors` для аудита
 
 ```sql
@@ -549,7 +549,8 @@ SELECT ... FROM stg.browser_raw WHERE event_id IS NOT NULL;
 
 -- Таблица ошибок
 INSERT INTO ods.browser_event_errors
-SELECT ... FROM stg.browser_raw WHERE event_id IS NULL;
+SELECT ... FROM stg.browser_raw
+WHERE event_id IS NULL OR event_ts IS NULL OR click_id IS NULL;
 ```
 
 ### Partial data в DDS
@@ -599,19 +600,19 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 
 ```python
 # dags/ddl_init_dag.py — создание баз/таблиц (ручной запуск при bootstrap)
-# dags/kafka_load_dag.py — загрузка JSONL в Kafka (фаза 2, через kafka-python)
+# dags/kafka_load_dag.py — загрузка JSONL в Kafka (через kafka-python)
 # dags/etl_pipeline_dag.py — основной ETL (STG→ODS→DDS→DM)
 
 # Учебный формат:
 # - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
 # - SQL-файлы вызываются по фиксированным путям;
-# - загрузка данных в Kafka (фаза 2) выполняется через DAG `kafka_load`.
+# - загрузка данных в Kafka выполняется через DAG `kafka_load`.
 #
-# Основной demo-сценарий (фаза 2):
+# Основной demo-сценарий:
 # ddl_init -> kafka_load -> etl_pipeline
 ```
 
-**DAG `kafka_load`** (фаза 2):
+**DAG `kafka_load`**:
 - Загрузка данных из `data/*.jsonl` в Kafka через `kafka-python`
 - TaskGroup `precheck`: проверка Kafka, файлов, параметров
 - TaskGroup `ingest`: создание топиков → параллельная загрузка 4 потоков → проверка
