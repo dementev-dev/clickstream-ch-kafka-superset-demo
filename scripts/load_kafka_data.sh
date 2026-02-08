@@ -9,9 +9,9 @@ set -euo pipefail
 # - Kafka CLI запускаем внутри docker‑контейнера `kafka`, а сами файлы читаем на хосте.
 #
 # Как запускать:
-#   make data
+#   make data                  # залить файлы целиком (по умолчанию)
 #   LIMIT=100 make data        # взять первые 100 строк каждого файла
-#   FULL=1 make data           # залить файлы целиком
+#   LIMIT=50 make data         # взять первые 50 строк каждого файла (быстрый тест)
 #   RESET_TOPICS=0 make data   # не пересоздавать топики, а дописать сообщения
 #
 # Требования:
@@ -22,17 +22,11 @@ COMPOSE_BIN="${COMPOSE_BIN:-docker compose}"
 KAFKA_SERVICE="${KAFKA_SERVICE:-kafka}"
 BOOTSTRAP_SERVER="${BOOTSTRAP_SERVER:-kafka:29092}"
 
-# Поведение по умолчанию: пересоздать топики и залить небольшой “срез” данных.
+# Поведение по умолчанию: пересоздать топики и залить все данные.
 RESET_TOPICS="${RESET_TOPICS:-1}"
-FULL="${FULL:-0}"
-LIMIT="${LIMIT:-50}"
+LIMIT="${LIMIT:-}"
 
-# Валидация параметров: лучше упасть с понятной ошибкой, чем молча сделать “не то”.
-if [[ "${FULL}" != "0" && "${FULL}" != "1" ]]; then
-  echo "FULL must be 0 or 1 (got: ${FULL})" >&2
-  exit 1
-fi
-
+# Валидация параметров: лучше упасть с понятной ошибкой, чем молча сделать "не то".
 if [[ "${RESET_TOPICS}" != "0" && "${RESET_TOPICS}" != "1" ]]; then
   echo "RESET_TOPICS must be 0 or 1 (got: ${RESET_TOPICS})" >&2
   exit 1
@@ -131,11 +125,11 @@ fi
 # - full: весь файл
 # - slice: первые N строк (быстрее для отладки)
 mode="slice"
-if [[ "$FULL" == "1" || "$LIMIT" == "0" || -z "$LIMIT" ]]; then
+if [[ "$LIMIT" == "0" || -z "$LIMIT" ]]; then
   mode="full"
 fi
 
-echo "Loading mode: ${mode} (FULL=${FULL}, LIMIT=${LIMIT:-unset})"
+echo "Loading mode: ${mode} (LIMIT=${LIMIT:-unset})"
 echo "Bootstrap (inside container): ${BOOTSTRAP_SERVER}"
 
 for f in "${files[@]}"; do
