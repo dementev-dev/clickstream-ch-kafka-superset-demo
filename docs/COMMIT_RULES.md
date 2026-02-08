@@ -1,78 +1,168 @@
-# Правила оформления коммитов
+# Commit Rules
 
-Документ задаёт единый стиль коммитов для всех участников проекта.
+Unified commit style for all project contributors. Follows [Conventional Commits](https://www.conventionalcommits.org/) specification.
 
-## Язык
+## Language
 
-- Язык коммитов: русский.
-- Технические термины (`Airflow`, `ClickHouse`, `Kafka`, `MV`, `DDL`) допускаются на английском.
+- **Primary language**: English
+- Russian is allowed for internal team convenience
+- Technical terms (Airflow, ClickHouse, Kafka, MV, DDL) keep as-is
 
-## Формат заголовка
+## Header Format
 
-- Формат: `<type>(<scope>): <краткое действие>`
-- Максимальная длина заголовка: 72 символа.
-- Заголовок пишется в повелительном стиле, без точки в конце.
+```
+<type>(<scope>): <short description>
+```
 
-### Разрешённые `type`
+- Maximum header length: 72 characters
+- Use imperative mood ("add", "fix", "update", not "added", "fixed")
+- No trailing period
 
-- `feat` — новая функциональность
-- `fix` — исправление ошибки
-- `refactor` — изменение структуры без смены поведения
-- `docs` — документация
-- `test` — тесты/проверки
-- `chore` — сервисные изменения (конфиги, скрипты, хуки)
-- `ci` — CI/CD
-- `perf` — оптимизация производительности
-- `revert` — откат коммита
+### Allowed `type`
 
-### Рекомендуемые `scope` для этого репозитория
+| Type | Description |
+|------|-------------|
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `refactor` | Code restructuring without behavior change |
+| `docs` | Documentation only |
+| `test` | Tests, checks, validations |
+| `chore` | Maintenance (configs, scripts, hooks) |
+| `ci` | CI/CD changes |
+| `perf` | Performance optimization |
+| `revert` | Revert previous commit |
 
-- `airflow`
-- `stg`
-- `ods`
-- `dds`
-- `dm`
-- `kafka`
-- `superset`
-- `monitoring`
-- `scripts`
-- `docs`
-- `infra`
+### Recommended `scope` for this repo
 
-## Структура тела коммита
+| Scope | Used for |
+|-------|----------|
+| `airflow` | DAGs, operators, Airflow config |
+| `stg` | STG layer tables and pipelines |
+| `ods` | ODS layer tables and pipelines |
+| `dds` | DDS layer tables and pipelines |
+| `dm` | Data mart views and tables |
+| `kafka` | Kafka topics, producers, consumers |
+| `superset` | Dashboards, datasets, charts |
+| `monitoring` | Prometheus, Grafana, alerts |
+| `scripts` | Shell scripts, automation |
+| `docs` | Documentation, README, plans |
+| `infra` | Docker, compose, infrastructure |
 
-Если изменение не тривиальное, тело коммита обязательно. Для удобства чтения используйте буллеты.
+## Body Structure
 
-Рекомендуемый шаблон:
+For non-trivial changes, body is required. Use bullet points for readability.
 
-```text
-<type>(<scope>): <краткое действие>
+### Template (English)
+
+```
+<type>(<scope>): <short description>
+
+- Why:
+  - reason for change
+- What:
+  - key change 1
+  - key change 2
+- Check:
+  - how verified (command/test/smoke-check)
+```
+
+### Template (Russian - допустимо)
+
+```
+<type>(<scope>): <краткое описание>
 
 - Зачем:
   - причина изменения
-- Что сделано:
+- Что:
   - ключевое изменение 1
   - ключевое изменение 2
 - Проверка:
-  - как проверено (команда/тест/смоук-чек)
+  - как проверено
 ```
 
-## Размер и границы коммита
+## Commit Scope Rules
 
-- Один коммит = одна логическая задача.
-- Не смешивать в одном коммите функциональные изменения и крупный рефакторинг без необходимости.
-- Документацию обновлять в том же коммите, где меняется поведение пайплайна или инфраструктуры.
+- One commit = one logical task
+- Don't mix feature changes with large refactoring
+- Update docs in the same commit where behavior changes
 
-## Ломающие изменения
+## Breaking Changes
 
-- Для ломающих изменений используйте `!` в заголовке:
-  - `feat(ods)!: изменить контракт таблицы browser_event`
-- Добавляйте footer:
-  - `BREAKING CHANGE: ...`
+Use `!` in header for breaking changes:
+```
+feat(ods)!: change browser_event table contract
+```
 
-## Примеры
+Add footer:
+```
+BREAKING CHANGE: column event_type renamed to event_name
+```
 
-- `feat(ods): перенести STG->ODS в batch шаг Airflow`
-- `fix(airflow): ждать данные в STG перед load_ods`
-- `docs(architecture): обновить схему потока после миграции ODS`
-- `chore(scripts): синхронизировать make transform с новым ETL`
+## Examples
+
+### Good examples
+
+```
+feat(superset): add e-commerce analytics dashboard
+
+- Why:
+  - Business needs visualization for clickstream analysis
+- What:
+  - Add superset-init service to docker-compose
+  - Create Python scripts for ClickHouse connection
+  - Add 10 charts (KPI, traffic, geo, UTM, DQ)
+  - Makefile commands superset-*
+- Check:
+  - Dashboard opens at http://localhost:8088
+  - All charts load data from dm.v_events_enriched
+```
+
+```
+fix(kafka): correct volume path for KRaft mode
+
+- Why:
+  - Kafka fails to start with permission denied on /tmp/kraft-combined-logs
+- What:
+  - Change volume path to /var/lib/kafka/data
+- Check:
+  - make up starts Kafka successfully
+```
+
+```
+docs(architecture): update data flow diagram after ODS migration
+```
+
+```
+chore(scripts): sync make transform with new ETL pipeline
+```
+
+### Bad examples (don't do this)
+
+```
+❌ added superset dashboard        # no type, past tense
+❌ feat: добавлен дашборд          # no scope, mixed languages
+❌ fix: исправлен баг              # no scope, past tense, vague description
+❌ feat(airflow): add feature and fix bug and update docs  # multiple concerns
+```
+
+## Quick Reference
+
+```bash
+# Feature
+feat(scope): add something new
+
+# Bug fix
+fix(scope): correct something
+
+# Documentation
+docs(scope): update something
+
+# Refactoring
+refactor(scope): restructure something
+
+# Performance
+perf(scope): optimize something
+
+# Maintenance
+chore(scope): update something
+```
