@@ -385,6 +385,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus_uid"
+          },
           "expr": "rate(ClickHouseProfileEvents_Query[1m])",
           "refId": "A"
         }
@@ -671,6 +675,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus_uid"
+          },
           "expr": "rate(ClickHouseProfileEvents_InsertedRows[1m])",
           "refId": "A"
         }
@@ -967,6 +975,10 @@
       },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus_uid"
+          },
           "expr": "rate(ClickHouseProfileEvents_Merge[1m])",
           "refId": "A"
         }
