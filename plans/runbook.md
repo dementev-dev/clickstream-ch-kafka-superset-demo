@@ -32,8 +32,9 @@ make ddl
 ## Make таргеты
 
 - `make up` — `docker compose up -d` (поднимает весь стек из `docker-compose.yml`).
-- `make ddl` — применяет SQL из `plans/clickhouse_ddl.md` в контейнер ClickHouse (извлекает все блоки ```sql``` и исполняет их через `clickhouse-client`).
+- `make ddl` — применяет исполняемые SQL-файлы из `sql/ddl/*` в контейнер ClickHouse через `clickhouse-client`.
 - `make data` — пересоздаёт топики (по умолчанию) и публикует события из `data/*.jsonl` в Kafka (1 строка = 1 Kafka message value).
+- `make transform` — выполняет batch-процесс `STG -> ODS -> DDS -> DM` через `scripts/run_batch.sh`.
 
 План реализации механики заливки (дизайн/решения): `plans/kafka_ingest_plan.md`.
 
@@ -75,7 +76,7 @@ RESET_TOPICS=0 make data
 
 ## Применение DDL в ClickHouse (`make ddl`)
 
-Скрипт исполняет SQL из `plans/clickhouse_ddl.md`. Для `ENGINE = Kafka` важно, чтобы `kafka_broker_list` был доступен из контейнера ClickHouse.
+Скрипт исполняет SQL-файлы из `sql/ddl/*` по фиксированному порядку. Для `ENGINE = Kafka` важно, чтобы `kafka_broker_list` был доступен из контейнера ClickHouse.
 
 В текущем compose:
 

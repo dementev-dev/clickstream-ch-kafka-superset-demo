@@ -86,9 +86,32 @@ WHERE length(parse_errors) > 0
 UNION ALL
 SELECT today(), 'ods', 'location_event', 'total_rows', count() FROM ods.location_event
 UNION ALL
+SELECT today(), 'ods', 'location_event', 'rows_with_errors', count()
+FROM ods.location_event
+WHERE length(parse_errors) > 0
+
+UNION ALL
 SELECT today(), 'ods', 'device_by_click', 'total_rows', count() FROM ods.device_by_click
 UNION ALL
+SELECT today(), 'ods', 'device_by_click', 'rows_with_errors', count()
+FROM ods.device_by_click
+WHERE length(parse_errors) > 0
+
+UNION ALL
 SELECT today(), 'ods', 'geo_by_click', 'total_rows', count() FROM ods.geo_by_click
+UNION ALL
+SELECT today(), 'ods', 'geo_by_click', 'rows_with_errors', count()
+FROM ods.geo_by_click
+WHERE length(parse_errors) > 0
+
+UNION ALL
+SELECT today(), 'ods', 'browser_event_errors', 'total_rows', count() FROM ods.browser_event_errors
+UNION ALL
+SELECT today(), 'ods', 'location_event_errors', 'total_rows', count() FROM ods.location_event_errors
+UNION ALL
+SELECT today(), 'ods', 'device_by_click_errors', 'total_rows', count() FROM ods.device_by_click_errors
+UNION ALL
+SELECT today(), 'ods', 'geo_by_click_errors', 'total_rows', count() FROM ods.geo_by_click_errors
 
 UNION ALL
 SELECT today(), 'dds', 'event', 'total_rows', count() FROM dds.event
