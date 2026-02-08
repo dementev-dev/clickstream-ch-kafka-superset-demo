@@ -193,14 +193,13 @@ services:
 
   grafana:
     image: grafana/grafana:11.5.2-ubuntu
-    user: root
     depends_on:
       - prometheus
     ports:
       - 3000:3000
     volumes:
       - grafana_lib:/var/lib/grafana
-      - ./configs/grafana/provisioning/:/etc/grafana/provisioning/
+      - ./configs/grafana/provisioning/:/etc/grafana/provisioning/:ro
     # container_name: grafana
     # hostname: grafana
     restart: unless-stopped

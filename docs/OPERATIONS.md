@@ -258,5 +258,30 @@ curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/aler
 ## Troubleshooting
 
 - `etl_pipeline` падает с ошибкой схемы: сначала запустить `ddl_init`.
+- `git pull` падает с `Permission denied` на `data/*` или `configs/grafana/provisioning/*`:
+  - Причина: локально есть файлы/каталоги не вашего пользователя (часто после запуска контейнеров с root-пользователем).
+  - Диагностика:
+    ```bash
+    ls -ld data configs/grafana/provisioning
+    ls -l data | head -n 20
+    ```
+  - Быстрое восстановление:
+    ```bash
+    # Владелец и права для рабочей копии репозитория
+    sudo chown -R "$USER:$USER" .
+    find . -type d -exec chmod u+rwx {} \;
+    find . -type f -exec chmod u+rw {} \;
+    ```
+  - После восстановления повторить `git pull --ff-only`.
+  - Не запускать `git` через `sudo`.
+- `grafana` перезапускается с ошибкой `attempt to write a readonly database`:
+  - Причина: старый `grafana_lib` содержит `grafana.db`, созданный root-пользователем.
+  - Простой recovery (сбросить только volume Grafana):
+    ```bash
+    docker compose stop grafana
+    docker volume ls | grep grafana_lib
+    docker volume rm <project>_grafana_lib
+    docker compose up -d grafana
+    ```
 - После `docker compose down -v` нужно повторно прогнать: `ddl_init` -> `kafka_load` -> `etl_pipeline`.
 - Для демо по умолчанию использовать малый срез данных; полный прогон делать осознанно.
