@@ -5,3 +5,6 @@ psycopg2-binary==2.9.9
 
 # ClickHouse operator/hook для DAG'ов
 airflow-clickhouse-plugin==1.6.0
+
+# Kafka client для загрузки данных (DAG kafka_load)
+kafka-python==2.0.6

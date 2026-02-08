@@ -61,8 +61,7 @@ check_clickhouse >> ddl_00_databases >> ddl_10_stg >> ddl_20_ods >> ddl_30_dds >
 
 ## Дизайн DAG `kafka_load` (отдельный независимый контур)
 ### Params (через Trigger DAG with config)
-- `limit`: int, default `50`.
-- `full_load`: bool, default `false`.
+- `limit`: int, default `0` (0 = все строки).
 - `reset_topics`: bool, default `true`.
 - `load_browser`: bool, default `true`.
 - `load_location`: bool, default `true`.

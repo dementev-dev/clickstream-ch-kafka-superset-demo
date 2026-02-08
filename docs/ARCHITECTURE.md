@@ -116,7 +116,7 @@ flowchart TB
         DM_T["VIEW для BI<br/>(Superset/Grafana)"]
     end
 
-    RAW -->|kafka-console-producer| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
+    RAW -->|kafka_load DAG / kafka-console-producer| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
     ODS_T -->|argMax + JOIN| DDS_T -->|VIEW| DM_T
     ODS_T -.->|ошибки| DQ
 ```
@@ -598,21 +598,30 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 Инфраструктура Airflow развёрнута и готова к использованию:
 
 ```python
-# dags/ddl_init_dag.py и dags/etl_pipeline_dag.py
-#
+# dags/ddl_init_dag.py — создание баз/таблиц (ручной запуск при bootstrap)
+# dags/kafka_load_dag.py — загрузка JSONL в Kafka (фаза 2, через kafka-python)
+# dags/etl_pipeline_dag.py — основной ETL (STG→ODS→DDS→DM)
+
 # Учебный формат:
 # - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
 # - SQL-файлы вызываются по фиксированным путям;
-# - загрузка данных в Kafka (Этап 1) выполняется через `make data`.
+# - загрузка данных в Kafka (фаза 2) выполняется через DAG `kafka_load`.
 #
-# Основной demo-сценарий:
-# ddl_init -> make data -> etl_pipeline
+# Основной demo-сценарий (фаза 2):
+# ddl_init -> kafka_load -> etl_pipeline
 ```
+
+**DAG `kafka_load`** (фаза 2):
+- Загрузка данных из `data/*.jsonl` в Kafka через `kafka-python`
+- TaskGroup `precheck`: проверка Kafka, файлов, параметров
+- TaskGroup `ingest`: создание топиков → параллельная загрузка 4 потоков → проверка
+- Параметры: `limit` (0 = все), `reset_topics`, `load_*` (выбор потоков)
 
 **Подключение к ClickHouse:**
 - Connection: `clickhouse_default`
 - URL: `clickhouse://default:123456@clickhouse:9000/default` (native TCP для Airflow plugin)
 - Provider/интеграция: `airflow-clickhouse-plugin` (в `airflow/requirements.txt`), задачи выполняются через `ClickHouseOperator`.
+- Дополнительно: `kafka-python==2.0.6` для работы с Kafka из DAG.
 - Примечание: Superset подключается к ClickHouse по HTTP (обычно `clickhouse+connect://...:8123/...`).
 
 ---

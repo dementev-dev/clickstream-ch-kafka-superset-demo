@@ -15,8 +15,27 @@
 make up
 ```
 
-2) (Опционально) Залить данные в Kafka:
+2) Залить данные в Kafka (два варианта):
 
+**Вариант А: Через Airflow DAG `kafka_load` (рекомендуется, фаза 2)**
+```bash
+# Через CLI — полная загрузка по умолчанию
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"reset_topics": true}'
+
+# Ограниченная загрузка — первые 100 строк
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"limit": 100, "reset_topics": true}'
+
+# Или через UI: Airflow → DAGs → kafka_load → Trigger DAG with config
+```
+
+Параметры `kafka_load`:
+- `limit` — количество строк (default: 0 — все строки)
+- `reset_topics` — пересоздать топики (default: true)
+- `load_browser/load_location/load_device/load_geo` — выбор потоков (default: true)
+
+**Вариант Б: Через shell-скрипт `make data` (устаревший)**
 ```bash
 make data
 ```
@@ -37,6 +56,8 @@ make ddl
 - `make transform` — выполняет batch-процесс `STG -> ODS -> DDS -> DM` через `scripts/run_batch.sh`.
 
 План реализации механики заливки (дизайн/решения): `plans/kafka_ingest_plan.md`.
+
+План Airflow DAG'ов: `plans/airflow_dags_plan.md`.
 
 ## Загрузка данных в Kafka (`make data`)
 

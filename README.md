@@ -33,10 +33,18 @@ docker compose ps
 docker compose exec -T airflow-webserver airflow dags trigger ddl_init
 ```
 
-Загрузка небольшого среза данных в Kafka:
+Загрузка данных в Kafka (фаза 2 — через Airflow):
 ```bash
-make data            # по умолчанию первые 50 строк
-# или: FULL=1 make data    # полный датасет (1000 строк)
+# Вариант 1: Через Airflow DAG (рекомендуется) — полная загрузка по умолчанию
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"reset_topics": true}'
+
+# Ограниченная загрузка — первые 100 строк
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"limit": 100, "reset_topics": true}'
+
+# Вариант 2: Через shell-скрипт (устаревший)
+make data            # полная загрузка
 ```
 
 Запуск batch-трансформации (STG -> ODS -> DDS -> DM) в Airflow (если DAG выключен, сначала unpause):
@@ -95,8 +103,8 @@ flowchart TB
     end
 
     subgraph Airflow["Airflow"]
-        DAG[DAG: ddl_init / etl_pipeline]
-    end
+            DAG[DAG: ddl_init / kafka_load / etl_pipeline]
+        end
 
     Sources -->|make data| Kafka -->|MV| STG -->|Batch SQL| ODS -->|Batch SQL| DDS -->|VIEW| DM
     DAG -.->|оркестрация| STG & ODS & DDS & DM
