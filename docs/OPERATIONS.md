@@ -98,7 +98,7 @@ make reload-monitoring
 
 # Или вручную:
 docker compose up -d prometheus grafana kafka-exporter statsd-exporter
-docker compose restart prometheus
+docker compose restart prometheus statsd-exporter
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload

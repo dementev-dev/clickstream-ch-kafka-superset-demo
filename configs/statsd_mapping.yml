@@ -41,7 +41,8 @@ mappings:
     type: gauge
 
   # Task duration (timer → _seconds суффикс)
-  - match: "airflow.dag.*.task.*.duration"
+  # Проверено для Airflow 2.10.5: metric key = dag.<dag_id>.<task_id>.duration
+  - match: "airflow.dag.*.*.duration"
     name: "airflow_task_duration_seconds"
     help: "Task duration"
     type: timer
@@ -49,26 +50,20 @@ mappings:
       dag_id: "$1"
       task_id: "$2"
 
-  # Task failures (counter → _total суффикс)
-  - match: "airflow.dag.*.task.*.failures"
+  # Task failures/success (counter → _total суффикс)
+  # Проверено для Airflow 2.10.5: metric key = ti.finish.<dag_id>.<task_id>.<state>
+  - match: "airflow.ti.finish.*.*.failed"
     name: "airflow_task_failures_total"
-    help: "Task failures"
+    help: "Task failures by dag_id and task_id"
     type: counter
     labels:
       dag_id: "$1"
       task_id: "$2"
 
-  # Task success (counter → _total суффикс)
-  - match: "airflow.dag.*.task.*.success"
+  - match: "airflow.ti.finish.*.*.success"
     name: "airflow_task_success_total"
-    help: "Task success"
+    help: "Task successes by dag_id and task_id"
     type: counter
     labels:
       dag_id: "$1"
       task_id: "$2"
-
-  # Catch-all для остальных airflow метрик
-  - match: "airflow.*.*"
-    name: "airflow_${1}_${2}"
-    help: "Airflow metric $1.$2"
-    type: gauge

@@ -18,7 +18,7 @@ transform:
 reload-monitoring:
 	@echo "=== Перезагрузка сервисов мониторинга ==="
 	$(COMPOSE) up -d prometheus grafana kafka-exporter statsd-exporter
-	$(COMPOSE) restart prometheus
+	$(COMPOSE) restart prometheus statsd-exporter
 	@echo "=== Перезагрузка provisioning Grafana ==="
 	@sleep 2
 	@curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload && echo " [datasources]"

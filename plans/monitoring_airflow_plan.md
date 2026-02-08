@@ -16,10 +16,10 @@
 - `airflow_executor_open_slots` — доступные слоты executor
 - `airflow_executor_queued_tasks` — задачи в очереди
 - `airflow_executor_running_tasks` — запущенные задачи
-- `airflow_task_duration{task_id, dag_id}` — длительность выполнения тасков
-- `airflow_task_failures` — количество падений тасков
-- `airflow_task_success` — успешные выполнения
-- `airflow_scheduler_heartbeat` — heartbeats шедулера
+- `airflow_task_duration_seconds{task_id, dag_id}` — длительность выполнения тасков
+- `airflow_task_failures_total{task_id, dag_id}` — количество падений тасков
+- `airflow_task_success_total{task_id, dag_id}` — успешные выполнения
+- `airflow_scheduler_heartbeat_total` — heartbeats шедулера
 
 ---
 
@@ -114,8 +114,9 @@ mappings:
       operator: "$1"
 
   # Task duration by dag_id и task_id
-  - match: "airflow.dag.*.task.*.duration"
-    name: "airflow_task_duration"
+  # Проверено на Airflow 2.10.5: dag.<dag_id>.<task_id>.duration
+  - match: "airflow.dag.*.*.duration"
+    name: "airflow_task_duration_seconds"
     help: "Task duration by dag_id and task_id"
     type: timer
     labels:
@@ -123,16 +124,17 @@ mappings:
       task_id: "$2"
 
   # Task failures/success by dag_id и task_id
-  - match: "airflow.dag.*.task.*.failures"
-    name: "airflow_task_failures"
+  # Проверено на Airflow 2.10.5: ti.finish.<dag_id>.<task_id>.<state>
+  - match: "airflow.ti.finish.*.*.failed"
+    name: "airflow_task_failures_total"
     help: "Task failures by dag_id and task_id"
     type: counter
     labels:
       dag_id: "$1"
       task_id: "$2"
 
-  - match: "airflow.dag.*.task.*.success"
-    name: "airflow_task_success"
+  - match: "airflow.ti.finish.*.*.success"
+    name: "airflow_task_success_total"
     help: "Task success by dag_id and task_id"
     type: counter
     labels:
@@ -141,7 +143,7 @@ mappings:
 
   # Scheduler metrics
   - match: "airflow.scheduler_heartbeat"
-    name: "airflow_scheduler_heartbeat"
+    name: "airflow_scheduler_heartbeat_total"
     help: "Scheduler heartbeats"
     type: counter
 
@@ -150,11 +152,6 @@ mappings:
     help: "Scheduler critical section busy"
     type: gauge
 
-  # Catch-all для остальных airflow метрик
-  - match: "airflow.*"
-    name: "airflow_${1}"
-    help: "Airflow metric $1"
-    type: gauge
 ```
 
 ### 2.3. configs/prometheus.yml
@@ -204,9 +201,9 @@ scrape_configs:
 | Executor Slots | `airflow_executor_open_slots` | Доступные слоты |
 | Queued Tasks | `airflow_executor_queued_tasks` | Задачи в очереди |
 | Running Tasks | `airflow_executor_running_tasks` | Выполняемые задачи |
-| Task Duration | `rate(airflow_task_duration_sum[5m]) / rate(airflow_task_duration_count[5m])` | Средняя длительность тасков |
-| Task Failures | `rate(airflow_task_failures[5m])` | Rate падений по таскам |
-| Scheduler Heartbeat | `rate(airflow_scheduler_heartbeat[5m])` | Активность шедулера |
+| Task Duration | `rate(airflow_task_duration_seconds_sum[5m]) / rate(airflow_task_duration_seconds_count[5m])` | Средняя длительность тасков |
+| Task Failures | `rate(airflow_task_failures_total[5m])` | Rate падений по таскам |
+| Scheduler Heartbeat | `rate(airflow_scheduler_heartbeat_total[5m])` | Активность шедулера |
 
 ### 3.2. Структура дашборда (основные секции)
 
@@ -270,7 +267,7 @@ groups:
               to: 0
             datasourceUid: prometheus_uid
             model:
-              expr: rate(airflow_scheduler_heartbeat[5m])
+              expr: rate(airflow_scheduler_heartbeat_total[5m])
               instant: true
           - refId: B
             relativeTimeRange:
@@ -289,7 +286,7 @@ groups:
         for: 2m
         annotations:
           summary: "Airflow scheduler не отправляет heartbeats"
-          description: "Scheduler possible down — rate(airflow_scheduler_heartbeat) < 0.1 в течение 2 минут"
+          description: "Scheduler possible down — rate(airflow_scheduler_heartbeat_total) < 0.1 в течение 2 минут"
         labels:
           severity: critical
 
@@ -329,7 +326,7 @@ groups:
           - refId: A
             datasourceUid: prometheus_uid
             model:
-              expr: rate(airflow_task_failures[5m])
+              expr: rate(airflow_task_failures_total[5m])
               instant: true
           - refId: B
             datasourceUid: __expr__
@@ -345,7 +342,7 @@ groups:
         for: 3m
         annotations:
           summary: "Высокий rate падений тасков"
-          description: "rate(airflow_task_failures) > 0.1 в течение 3 минут — проверьте логи DAG"
+          description: "rate(airflow_task_failures_total) > 0.1 в течение 3 минут — проверьте логи DAG"
         labels:
           severity: warning
 
