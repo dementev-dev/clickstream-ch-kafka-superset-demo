@@ -116,11 +116,7 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus_uid"
-          },
-          "expr": "delta(ClickHouseProfileEvents_OSCPUVirtualTimeMicroseconds[1m]) / 60 / 1000000 / scalar(count({__name__=~\"ClickHouseAsyncMetrics_CPUFrequencyMHz_.*\"})) * 100",
+          "expr": "rate(ClickHouseProfileEvents_OSCPUVirtualTimeMicroseconds[1m]) / 1000000 / scalar(count({__name__=~\"ClickHouseAsyncMetrics_CPUFrequencyMHz_.*\"})) * 100",
           "refId": "A"
         }
       ],
@@ -385,10 +381,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus_uid"
-          },
           "expr": "rate(ClickHouseProfileEvents_Query[1m])",
           "refId": "A"
         }
@@ -675,10 +667,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus_uid"
-          },
           "expr": "rate(ClickHouseProfileEvents_InsertedRows[1m])",
           "refId": "A"
         }
@@ -975,10 +963,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus_uid"
-          },
           "expr": "rate(ClickHouseProfileEvents_Merge[1m])",
           "refId": "A"
         }
