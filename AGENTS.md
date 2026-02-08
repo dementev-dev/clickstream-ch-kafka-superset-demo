@@ -20,11 +20,11 @@
 ## Ключевые артефакты
 
 ### Исполняемые файлы (текущая структура)
-- `dags/` — Airflow DAGs для оркестрации ETL:
-  - `dags/ddl_init_dag.py` — инициализация схемы ClickHouse
-  - `dags/etl_pipeline_dag.py` — ETL процесс STG → ODS → DDS → DM
-  - `dags/kafka_load_dag.py` — загрузка данных в Kafka из JSONL
-  - `dags/utils/kafka_helpers.py` — helper-функции для работы с Kafka
+- `airflow/dags/` — Airflow DAGs для оркестрации ETL:
+  - `airflow/dags/ddl_init_dag.py` — инициализация схемы ClickHouse
+  - `airflow/dags/etl_pipeline_dag.py` — ETL процесс STG → ODS → DDS → DM
+  - `airflow/dags/kafka_load_dag.py` — загрузка данных в Kafka из JSONL
+  - `airflow/dags/utils/kafka_helpers.py` — helper-функции для работы с Kafka
 - `sql/` — SQL по слоям:
   - `sql/ddl/00_databases.sql` — создание БД stg/ods/dds/dm
   - `sql/ddl/stg/10_stg.sql` — STG слой (Kafka Engine + MV)

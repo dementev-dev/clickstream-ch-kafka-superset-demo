@@ -108,7 +108,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./dags:/opt/airflow/dags
+      - ./airflow/dags:/opt/airflow/dags
       - ./sql:/opt/airflow/sql:ro
       - ./data:/opt/airflow/data
     networks:
@@ -133,7 +133,7 @@ services:
         airflow scheduler
       "
     volumes:
-      - ./dags:/opt/airflow/dags
+      - ./airflow/dags:/opt/airflow/dags
       - ./sql:/opt/airflow/sql:ro
       - ./data:/opt/airflow/data
     networks:
@@ -155,7 +155,7 @@ services:
     environment:
       <<: *airflow-default-env
     volumes:
-      - ./dags:/opt/airflow/dags
+      - ./airflow/dags:/opt/airflow/dags
       - ./sql:/opt/airflow/sql:ro
       - ./data:/opt/airflow/data
     networks:

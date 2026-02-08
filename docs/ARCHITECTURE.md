@@ -578,9 +578,9 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 Инфраструктура Airflow развёрнута и готова к использованию:
 
 ```python
-# dags/ddl_init_dag.py — создание баз/таблиц (ручной запуск при bootstrap)
-# dags/kafka_load_dag.py — загрузка JSONL в Kafka (через kafka-python)
-# dags/etl_pipeline_dag.py — основной ETL (STG→ODS→DDS→DM)
+# airflow/dags/ddl_init_dag.py — создание баз/таблиц (ручной запуск при bootstrap)
+# airflow/dags/kafka_load_dag.py — загрузка JSONL в Kafka (через kafka-python)
+# airflow/dags/etl_pipeline_dag.py — основной ETL (STG→ODS→DDS→DM)
 
 # Учебный формат:
 # - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
