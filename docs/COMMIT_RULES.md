@@ -52,6 +52,43 @@ Unified commit style for all project contributors. Follows [Conventional Commits
 
 For non-trivial changes, body is required. Use bullet points for readability.
 
+### Multiline body in CLI (important)
+
+- Do not pass body as one quoted string with `\n` (it will be stored literally).
+- Use multiple `-m` flags, or `-F` with heredoc.
+
+Correct:
+
+```bash
+git commit \
+  -m "feat(monitoring): add Grafana alert rules" \
+  -m "- Why:
+  - need proactive signals for ClickHouse health
+- What:
+  - add alert provisioning file for failed queries, memory, parts
+  - pin Prometheus datasource uid for stable dashboard binding
+- Check:
+  - POST /api/admin/provisioning/alerting/reload
+  - GET /api/v1/provisioning/alert-rules"
+```
+
+Also correct:
+
+```bash
+git commit -F- <<'MSG'
+feat(monitoring): add Grafana alert rules
+
+- Why:
+  - need proactive signals for ClickHouse health
+- What:
+  - add alert provisioning file for failed queries, memory, parts
+  - pin Prometheus datasource uid for stable dashboard binding
+- Check:
+  - POST /api/admin/provisioning/alerting/reload
+  - GET /api/v1/provisioning/alert-rules
+MSG
+```
+
 ### Template (English)
 
 ```
