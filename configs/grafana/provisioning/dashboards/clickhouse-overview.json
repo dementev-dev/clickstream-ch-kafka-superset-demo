@@ -38,7 +38,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -116,7 +116,7 @@
       },
       "targets": [
         {
-          "expr": "rate(ClickHouseAsyncMetrics_CPUStealMicroseconds[1m]) / 10000",
+          "expr": "rate(ClickHouseProfileEvents_OSCPUVirtualTimeMicroseconds[1m]) / 1000000 / scalar(count({__name__=~\"ClickHouseAsyncMetrics_CPUFrequencyMHz_.*\"})) * 100",
           "refId": "A"
         }
       ],
@@ -126,7 +126,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -210,7 +210,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -307,7 +307,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -391,7 +391,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -475,7 +475,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -536,7 +536,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -593,7 +593,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -667,7 +667,7 @@
       },
       "targets": [
         {
-          "expr": "rate(ClickHouseProfileEvents_InsertedRowsCount[1m])",
+          "expr": "rate(ClickHouseProfileEvents_InsertedRows[1m])",
           "refId": "A"
         }
       ],
@@ -690,7 +690,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -737,7 +737,7 @@
       "pluginVersion": "11.5.2",
       "targets": [
         {
-          "expr": "ClickHouseMetrics_Parts",
+          "expr": "ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables",
           "refId": "A"
         }
       ],
@@ -747,7 +747,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -803,6 +803,7 @@
       "gridPos": {
         "h": 8,
         "w": 16,
+        "x": 8,
         "y": 23
       },
       "id": 13,
@@ -820,18 +821,18 @@
       },
       "targets": [
         {
-          "expr": "ClickHouseMetrics_Parts",
-          "legendFormat": "{{ database }}.{{ table }}",
+          "expr": "{__name__=~\"ClickHouseMetrics_Parts(Active|Committed|Outdated|Deleting|PreActive|PreCommitted|Temporary|Wide|Compact|DeleteOnDestroy)\"}",
+          "legendFormat": "{{ __name__ }}",
           "refId": "A"
         }
       ],
-      "title": "Parts by Table",
+      "title": "Parts by State",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -888,7 +889,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "prometheus_uid"
       },
       "fieldConfig": {
         "defaults": {
@@ -972,27 +973,13 @@
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["clickhouse", "dwh", "monitoring"],
+  "tags": [
+    "clickhouse",
+    "dwh",
+    "monitoring"
+  ],
   "templating": {
-    "list": [
-      {
-        "current": {
-          "selected": false,
-          "text": "Prometheus",
-          "value": "Prometheus"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "multi": false,
-        "name": "datasource",
-        "options": [],
-        "query": "prometheus",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
-      }
-    ]
+    "list": []
   },
   "time": {
     "from": "now-1h",
@@ -1002,6 +989,6 @@
   "timezone": "Europe/Moscow",
   "title": "ClickHouse Overview",
   "uid": "clickhouse-overview",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

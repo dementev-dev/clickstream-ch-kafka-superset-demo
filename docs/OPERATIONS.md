@@ -109,6 +109,7 @@ curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
 - **Grafana provisioning** (`configs/grafana/provisioning/`):
   - Datasource Prometheus автоматически настроен
   - Dashboard "ClickHouse Overview" загружается при старте
+  - Alert rules для ClickHouse загружаются при старте
 
 ### Дашборд ClickHouse Overview
 
@@ -118,7 +119,9 @@ URL: `http://localhost:3000/d/clickhouse-overview/clickhouse-overview`
 |--------|---------|
 | System Health | CPU Usage, Memory Resident, Memory Code |
 | Query Performance | Queries/sec, Active Queries, Failed Queries, Total Queries, Inserted Rows/sec |
-| MergeTree Storage | Total Parts, Parts by Table, Total Merges, Merges/sec |
+| MergeTree Storage | Total Parts, Parts by State, Total Merges, Merges/sec |
+
+Принятое решение по метрикам: сверили naming через Context7 (`/clickhouse/clickhouse-docs`, раздел Prometheus interface) и заменили недоступные в `25.1` серии на фактически экспортируемые (`ClickHouseProfileEvents_InsertedRows`, `ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables`, `ClickHouseMetrics_Parts*`).
 
 ### Проверка метрик
 
@@ -128,6 +131,25 @@ curl -s "http://localhost:9090/api/v1/query?query=ClickHouseAsyncMetrics_MemoryR
 
 # Проверить счётчик запросов
 curl -s "http://localhost:9090/api/v1/query?query=ClickHouseProfileEvents_Query"
+```
+
+### Алерты Grafana
+
+Provisioning-файл: `configs/grafana/provisioning/alerting/clickhouse-alert-rules.yml`
+
+Настроены правила:
+- `ClickHouse Failed Queries Rate` — `rate(ClickHouseProfileEvents_FailedQuery[5m]) > 0` в течение `2m`
+- `ClickHouse Memory Resident High` — `MemoryResident / OSMemoryTotal * 100 > 85` в течение `5m`
+- `ClickHouse Parts Active High` — `ClickHouseMetrics_PartsActive > 500` в течение `10m`
+
+Проверка и reload без рестарта контейнера:
+
+```bash
+# Список правил unified alerting
+curl -s -u admin:admin http://localhost:3000/api/v1/provisioning/alert-rules
+
+# Принудительно перечитать provisioning alerting
+curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/alerting/reload
 ```
 
 ### Troubleshooting мониторинга

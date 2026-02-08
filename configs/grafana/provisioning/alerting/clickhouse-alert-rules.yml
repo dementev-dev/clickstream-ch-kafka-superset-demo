@@ -1,0 +1,268 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: clickhouse_health_group
+    folder: ClickHouse Alerts
+    interval: 1m
+    rules:
+      - uid: ch_failed_queries_rate
+        title: ClickHouse Failed Queries Rate
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: rate(ClickHouseProfileEvents_FailedQuery[5m])
+              instant: false
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        dashboardUid: clickhouse-overview
+        panelId: 8
+        noDataState: NoData
+        execErrState: Error
+        for: 2m
+        annotations:
+          __dashboardUid__: clickhouse-overview
+          __panelId__: "8"
+          summary: "Есть ошибки запросов в ClickHouse"
+          runbook_url: "http://localhost:3000/d/clickhouse-overview/clickhouse-overview"
+        labels:
+          service: clickhouse
+          severity: warning
+          metric: failed_queries
+        isPaused: false
+
+      - uid: ch_memory_resident_high
+        title: ClickHouse Memory Resident High
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: 100 * ClickHouseAsyncMetrics_MemoryResident / ClickHouseAsyncMetrics_OSMemoryTotal
+              instant: false
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 85
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        dashboardUid: clickhouse-overview
+        panelId: 3
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          __dashboardUid__: clickhouse-overview
+          __panelId__: "3"
+          summary: "Высокое потребление памяти ClickHouse (Memory Resident)"
+          runbook_url: "http://localhost:3000/d/clickhouse-overview/clickhouse-overview"
+        labels:
+          service: clickhouse
+          severity: critical
+          metric: memory_resident
+        isPaused: false
+
+      - uid: ch_parts_active_high
+        title: ClickHouse Parts Active High
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus_uid
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus_uid
+              editorMode: code
+              expr: ClickHouseMetrics_PartsActive
+              instant: false
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 500
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        dashboardUid: clickhouse-overview
+        panelId: 12
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          __dashboardUid__: clickhouse-overview
+          __panelId__: "12"
+          summary: "Слишком много активных MergeTree parts"
+          runbook_url: "http://localhost:3000/d/clickhouse-overview/clickhouse-overview"
+        labels:
+          service: clickhouse
+          severity: warning
+          metric: parts_active
+        isPaused: false

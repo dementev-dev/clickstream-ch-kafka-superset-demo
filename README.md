@@ -241,6 +241,11 @@ flowchart LR
 - Query Performance: queries/sec, active queries, failed queries
 - MergeTree Storage: parts count, merge rate
 
+Что алертится:
+- Failed queries rate (`rate(ClickHouseProfileEvents_FailedQuery[5m]) > 0`)
+- Memory Resident > 85% от `OSMemoryTotal`
+- Active parts > 500
+
 Конфигурация provisioning находится в [`configs/grafana/provisioning/`](configs/grafana/provisioning/). Подробнее в [`docs/OPERATIONS.md`](docs/OPERATIONS.md#мониторинг).
 
 ---
@@ -263,12 +268,11 @@ flowchart LR
 - **Трансформации**: DAG `etl_pipeline` (pre-check, batch STG→ODS→DDS→DM, валидация)
 - **Витрины**: VIEW в DM для бизнес-дашбордов (трафик, UTM, качество данных)
 - **Надёжность**: ошибки парсинга сохраняются в ODS, пайплайн не падает на "грязных" данных
-- **Мониторинг**: Prometheus скрейпит ClickHouse метрики, Grafana дашборд для визуализации
+- **Мониторинг**: Prometheus скрейпит ClickHouse метрики, Grafana дашборд и alert rules
 
 В планах (не требуется для MVP задания):
 - Инкрементальный batch (watermark вместо `full_refresh`)
 - DQ мониторинг по расписанию
-- Алерты в Grafana
 
 ---
 

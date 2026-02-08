@@ -32,6 +32,7 @@
 
 - `data/*.jsonl` — исходные данные (могут быть грязными)
 - `configs/` — конфиги ClickHouse, Prometheus, Grafana
+- `configs/grafana/provisioning/alerting/clickhouse-alert-rules.yml` — правила алертинга Grafana для ClickHouse
 
 ## Документация
 
