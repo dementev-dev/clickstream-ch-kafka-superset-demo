@@ -83,9 +83,58 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 ## Быстрые проверки
 
 - Kafka ingest: наличие данных в `stg.*` и типизированных строк в `ods.*`.
-- Мониторинг: доступность `/metrics` у ClickHouse и скрейп в Prometheus.
 - Airflow UI: `http://localhost:8080` показывает DAG `ddl_init`, `kafka_load`, `etl_pipeline`.
 - BI: витрина `dm.v_events_enriched` отвечает за разумное время при фильтре по дате.
+
+---
+
+## Мониторинг
+
+### Prometheus + Grafana для ClickHouse
+
+Стек мониторинга поднимается вместе с остальной инфраструктурой:
+
+```bash
+# Проверить статус сервисов мониторинга
+docker compose ps prometheus grafana
+
+# Проверить скрейп ClickHouse в Prometheus
+curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
+```
+
+### Конфигурация
+
+- **Prometheus** (`configs/prometheus.yml`): скрейп ClickHouse на порту `9126/metrics`
+- **ClickHouse** (`configs/prometheus_ch.xml`): включён экспорт метрик в формате Prometheus
+- **Grafana provisioning** (`configs/grafana/provisioning/`):
+  - Datasource Prometheus автоматически настроен
+  - Dashboard "ClickHouse Overview" загружается при старте
+
+### Дашборд ClickHouse Overview
+
+URL: `http://localhost:3000/d/clickhouse-overview/clickhouse-overview`
+
+| Раздел | Метрики |
+|--------|---------|
+| System Health | CPU Usage, Memory Resident, Memory Code |
+| Query Performance | Queries/sec, Active Queries, Failed Queries, Total Queries, Inserted Rows/sec |
+| MergeTree Storage | Total Parts, Parts by Table, Total Merges, Merges/sec |
+
+### Проверка метрик
+
+```bash
+# Проверить, что Prometheus собирает метрики
+curl -s "http://localhost:9090/api/v1/query?query=ClickHouseAsyncMetrics_MemoryResident"
+
+# Проверить счётчик запросов
+curl -s "http://localhost:9090/api/v1/query?query=ClickHouseProfileEvents_Query"
+```
+
+### Troubleshooting мониторинга
+
+- **"No data" в Grafana**: проверить, что Prometheus видит target (`Status -> Targets` в UI)
+- **Метрики не обновляются**: ClickHouse экспортирует метрики на `0.0.0.0:9126` внутри сети Docker
+- **Dashboard не загрузился**: проверить логи Grafana — provisioning работает при первом старте контейнера
 
 ## Troubleshooting
 

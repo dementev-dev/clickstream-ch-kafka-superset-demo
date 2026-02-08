@@ -1,6 +1,6 @@
 # ClickHouse Mini DWH для кликстрима
 
-[![Stack](https://img.shields.io/badge/stack-Kafka%20%7C%20ClickHouse%20%7C%20Airflow%20%7C%20Superset-blue)](./docker-compose.yml)
+[![Stack](https://img.shields.io/badge/stack-Kafka%20%7C%20ClickHouse%20%7C%20Airflow%20%7C%20Superset%20%7C%20Prometheus%2FGrafana-blue)](./docker-compose.yml)
 [![Layers](https://img.shields.io/badge/layers-STG%20→%20ODS%20→%20DDS%20→%20DM-green)](./docs/ARCHITECTURE.md)
 [![License](https://img.shields.io/badge/license-Educational-orange)]()
 
@@ -228,6 +228,23 @@ flowchart LR
 
 ---
 
+## Мониторинг инфраструктуры (Grafana + Prometheus)
+
+Для оценки состояния ClickHouse доступен дашборд мониторинга:
+
+1. Открыть Grafana: `http://localhost:3000` (admin/admin)
+2. Дашборд "ClickHouse Overview" загружается автоматически
+3. Проверить метрики Prometheus: `http://localhost:9090` → Status → Targets
+
+Что отслеживается:
+- System Health: CPU, Memory (Resident/Code)
+- Query Performance: queries/sec, active queries, failed queries
+- MergeTree Storage: parts count, merge rate
+
+Конфигурация provisioning находится в [`configs/grafana/provisioning/`](configs/grafana/provisioning/). Подробнее в [`docs/OPERATIONS.md`](docs/OPERATIONS.md#мониторинг).
+
+---
+
 ## Частые проблемы
 
 - `etl_pipeline` падает с сообщением про схему: сначала запустите `ddl_init`.
@@ -241,14 +258,17 @@ flowchart LR
 ## Статус проекта
 
 Реализовано:
-- DAG `ddl_init`: последовательное применение DDL + проверка схемы.
-- DAG `kafka_load`: ingest из `.jsonl` в Kafka через `kafka-python` (параметры `limit`, `reset_topics`).
-- DAG `etl_pipeline`: precheck, ожидание данных в STG, batch-пересчёт ODS/DDS/DM, базовые проверки.
-- Устойчивость к "грязным" данным: ошибки парсинга сохраняются в ODS, а не валят ingest.
+- **Инфраструктура**: Kafka + ClickHouse + Airflow + Superset + Prometheus/Grafana
+- **Ingest**: DAG `ddl_init` (DDL + проверка схемы), DAG `kafka_load` (параметры `limit`, `reset_topics`)
+- **Трансформации**: DAG `etl_pipeline` (pre-check, batch STG→ODS→DDS→DM, валидация)
+- **Витрины**: VIEW в DM для бизнес-дашбордов (трафик, UTM, качество данных)
+- **Надёжность**: ошибки парсинга сохраняются в ODS, пайплайн не падает на "грязных" данных
+- **Мониторинг**: Prometheus скрейпит ClickHouse метрики, Grafana дашборд для визуализации
 
 В планах (не требуется для MVP задания):
-- Инкрементальный batch (watermark вместо `full_refresh`).
-- DQ мониторинг по расписанию.
+- Инкрементальный batch (watermark вместо `full_refresh`)
+- DQ мониторинг по расписанию
+- Алерты в Grafana
 
 ---
 
