@@ -97,7 +97,7 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 make reload-monitoring
 
 # Или вручную:
-docker compose up -d prometheus grafana kafka-exporter
+docker compose up -d prometheus grafana kafka-exporter statsd-exporter
 docker compose restart prometheus
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
@@ -106,7 +106,7 @@ curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/aler
 
 Если менялся `configs/prometheus_ch.xml`: `docker compose restart clickhouse`.
 
-### Prometheus + Grafana для ClickHouse
+### Prometheus + Grafana для ClickHouse, Kafka и Airflow
 
 Стек мониторинга поднимается вместе с остальной инфраструктурой:
 
@@ -120,12 +120,14 @@ curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
 
 ### Конфигурация
 
-- **Prometheus** (`configs/prometheus.yml`): скрейп ClickHouse на порту `9126/metrics`
-- **ClickHouse** (`configs/prometheus_ch.xml`): включён экспорт метрик в формате Prometheus
+- **ClickHouse**: встроенный Prometheus endpoint (`/metrics` на порту `9126`)
+- **Kafka**: через `kafka-exporter` (порт `9308`)
+- **Airflow**: через `statsd-exporter` (StatsD → Prometheus, порт `9102`)
+  - Airflow отправляет метрики в StatsD-формате на `statsd-exporter:8125`
+  - Mapping конфигурация: `configs/statsd_mapping.yml`
 - **Grafana provisioning** (`configs/grafana/provisioning/`):
-  - Datasource Prometheus автоматически настроен
-  - Dashboard "ClickHouse Overview" загружается при старте
-  - Alert rules для ClickHouse загружаются при старте
+  - Дашборды: ClickHouse Overview, Kafka Overview, Airflow Overview
+  - Алерты: ClickHouse, Kafka, Airflow
 
 ### После `git pull`: быстрый апдейт мониторинга
 

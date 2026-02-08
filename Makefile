@@ -17,7 +17,7 @@ transform:
 # Перезагрузка конфигурации мониторинга (после изменений в provisioning)
 reload-monitoring:
 	@echo "=== Перезагрузка сервисов мониторинга ==="
-	$(COMPOSE) up -d prometheus grafana kafka-exporter
+	$(COMPOSE) up -d prometheus grafana kafka-exporter statsd-exporter
 	$(COMPOSE) restart prometheus
 	@echo "=== Перезагрузка provisioning Grafana ==="
 	@sleep 2

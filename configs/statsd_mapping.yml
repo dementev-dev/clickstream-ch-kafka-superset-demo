@@ -1,0 +1,74 @@
+# Mapping StatsD → Prometheus для Airflow
+# См. документацию: https://github.com/prometheus/statsd_exporter#metric-mapping-and-configuration
+
+mappings:
+  # DAG processing metrics
+  - match: "airflow.dag_processing.total_parse_time"
+    name: "airflow_dag_processing_total_parse_time"
+    help: "Total time to parse all DAGs"
+    type: gauge
+
+  - match: "airflow.dagbag_size"
+    name: "airflow_dagbag_size"
+    help: "DAGs in the DagBag"
+    type: gauge
+
+  # Executor metrics
+  - match: "airflow.executor.open_slots"
+    name: "airflow_executor_open_slots"
+    help: "Open slots on executor"
+    type: gauge
+
+  - match: "airflow.executor.queued_tasks"
+    name: "airflow_executor_queued_tasks"
+    help: "Queued tasks on executor"
+    type: gauge
+
+  - match: "airflow.executor.running_tasks"
+    name: "airflow_executor_running_tasks"
+    help: "Running tasks on executor"
+    type: gauge
+
+  # Scheduler metrics (counter → _total суффикс по Prometheus convention)
+  - match: "airflow.scheduler_heartbeat"
+    name: "airflow_scheduler_heartbeat_total"
+    help: "Scheduler heartbeats"
+    type: counter
+
+  - match: "airflow.scheduler.critical_section_busy"
+    name: "airflow_scheduler_critical_section_busy"
+    help: "Scheduler critical section busy"
+    type: gauge
+
+  # Task duration (timer → _seconds суффикс)
+  - match: "airflow.dag.*.task.*.duration"
+    name: "airflow_task_duration_seconds"
+    help: "Task duration"
+    type: timer
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  # Task failures (counter → _total суффикс)
+  - match: "airflow.dag.*.task.*.failures"
+    name: "airflow_task_failures_total"
+    help: "Task failures"
+    type: counter
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  # Task success (counter → _total суффикс)
+  - match: "airflow.dag.*.task.*.success"
+    name: "airflow_task_success_total"
+    help: "Task success"
+    type: counter
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  # Catch-all для остальных airflow метрик
+  - match: "airflow.*.*"
+    name: "airflow_${1}_${2}"
+    help: "Airflow metric $1.$2"
+    type: gauge

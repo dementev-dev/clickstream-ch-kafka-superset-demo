@@ -5,6 +5,11 @@ x-airflow-env: &airflow-default-env
   AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-replace-me-with-random-string}
   # ClickHouse connection для ETL
   AIRFLOW_CONN_CLICKHOUSE_DEFAULT: clickhouse://default:123456@clickhouse:9000/default
+  # StatsD для мониторинга (метрики → statsd-exporter → Prometheus)
+  AIRFLOW__METRICS__STATSD_ON: "True"
+  AIRFLOW__METRICS__STATSD_HOST: "statsd-exporter"
+  AIRFLOW__METRICS__STATSD_PORT: "8125"
+  AIRFLOW__METRICS__STATSD_PREFIX: "airflow"
 
 
 services:
@@ -240,6 +245,24 @@ services:
       - cs_dwh
     depends_on:
       - kafka
+    restart: unless-stopped
+
+  # StatsD Exporter для Airflow метрик (StatsD → Prometheus)
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.27.1
+    command: [
+      "--statsd.listen-udp=:8125",
+      "--statsd.listen-tcp=",
+      "--web.listen-address=:9102",
+      "--statsd.mapping-config=/tmp/statsd_mapping.yml"
+    ]
+    ports:
+      - "9102:9102"     # Prometheus metrics endpoint
+      - "8125:8125/udp" # StatsD receive port
+    volumes:
+      - ./configs/statsd_mapping.yml:/tmp/statsd_mapping.yml:ro
+    networks:
+      - cs_dwh
     restart: unless-stopped
 
 networks:
