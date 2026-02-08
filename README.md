@@ -4,7 +4,7 @@
 [![Layers](https://img.shields.io/badge/layers-STG%20→%20ODS%20→%20DDS%20→%20DM-green)](./docs/ARCHITECTURE.md)
 [![License](https://img.shields.io/badge/license-Educational-orange)]()
 
-Мини-демо для решения задания [DE-task.md](./data/DE-task.md): развернуть инфраструктуру на своей машине, прогнать кликстрим через Kafka в ClickHouse, сделать регулярный расчёт в Airflow и подготовить витрины под дашборд.
+Мини-демо для решения задания [DE-task.md](./docs/DE-task.md): развернуть инфраструктуру на своей машине, прогнать кликстрим через Kafka в ClickHouse, сделать регулярный расчёт в Airflow и подготовить витрины под дашборд.
 
 Фокус проекта: быстро показать работающий end-to-end сценарий и понятным языком объяснить, как устроены слои и почему пайплайн не падает на "грязных" данных.
 
@@ -74,6 +74,30 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 | Superset | http://localhost:8088 | BI-дашборды |
 | Prometheus | http://localhost:9090 | Метрики |
 | Grafana | http://localhost:3000 | Визуализация метрик |
+
+---
+
+## Подключение DBeaver (кратко)
+
+После прогона `ddl_init -> kafka_load -> etl_pipeline` можно быстро проверить витрины в DBeaver (удобно для демо бизнесу).
+
+1. `Database -> New Database Connection -> ClickHouse`
+2. Параметры:
+   - `Host`: `localhost`
+   - `Port`: `9123` (HTTP)
+   - `Database`: `default`
+   - `Username`: `default`
+   - `Password`: `123456`
+3. Нажать `Test Connection` -> `Finish`
+
+Если ваш драйвер просит native-протокол, используйте порт `8002`.
+
+Полезные быстрые запросы для первичного анализа:
+```sql
+SELECT count() AS rows FROM dm.v_events_enriched;
+SELECT * FROM dm.v_daily_traffic ORDER BY event_date DESC LIMIT 20;
+SELECT * FROM dm.v_utm_effectiveness ORDER BY clicks DESC LIMIT 20;
+```
 
 ---
 
@@ -231,4 +255,4 @@ flowchart LR
 ## Документация
 
 - [Архитектура и слои](./docs/ARCHITECTURE.md) — подробное описание STG/ODS/DDS/DM, ER-диаграммы, обоснование решений
-- [DE-task.md](./data/DE-task.md) — исходное задание
+- [DE-task.md](./docs/DE-task.md) — исходное задание
