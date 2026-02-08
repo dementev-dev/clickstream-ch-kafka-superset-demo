@@ -108,15 +108,12 @@
 - Параметры:
   - `limit` (int, default 0) — количество строк (0 = все)
   - `reset_topics` (bool, default true) — пересоздать топики
-  - `load_browser/load_location/load_device/load_geo` — выбор потоков
 - Примеры запуска:
   ```json
   // Полная загрузка (по умолчанию)
   {}
   // Ограниченная загрузка — 100 строк
   {"limit": 100}
-  // Только browser_events
-  {"limit": 100, "load_location": false, "load_device": false, "load_geo": false}
   ```
 
 ### `etl_pipeline` — ETL процесс
@@ -143,7 +140,7 @@ make up
 
 # 3. Загрузка данных через Airflow (вместо make data)
 # Airflow UI → DAGs → kafka_load → Trigger DAG with config
-# Параметры по умолчанию: limit=50, все потоки
+# Параметры по умолчанию: limit=0 (полная загрузка), reset_topics=true
 
 # 4. Запуск ETL
 # Airflow UI → DAGs → etl_pipeline → Trigger DAG with config

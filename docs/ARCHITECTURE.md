@@ -615,7 +615,7 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 - Загрузка данных из `data/*.jsonl` в Kafka через `kafka-python`
 - TaskGroup `precheck`: проверка Kafka, файлов, параметров
 - TaskGroup `ingest`: создание топиков → параллельная загрузка 4 потоков → проверка
-- Параметры: `limit` (0 = все), `reset_topics`, `load_*` (выбор потоков)
+- Параметры: `limit` (0 = все), `reset_topics`
 
 **Подключение к ClickHouse:**
 - Connection: `clickhouse_default`

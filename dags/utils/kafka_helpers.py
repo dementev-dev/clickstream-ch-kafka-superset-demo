@@ -10,10 +10,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Optional
 
 # -----------------------------------------------------------------------------
 # Конфигурация подключения к Kafka
@@ -72,7 +68,7 @@ def check_kafka_ready(
 # Управление топиками
 # -----------------------------------------------------------------------------
 def prepare_topics(
-    topics: Optional[list[str]] = None,
+    topics: list[str] | None = None,
     reset: bool = True,
     bootstrap_servers: str = KAFKA_BOOTSTRAP_SERVERS,
     timeout_ms: int = REQUEST_TIMEOUT_MS,
@@ -237,21 +233,12 @@ def load_jsonl(
 # -----------------------------------------------------------------------------
 def validate_load_params(
     limit: int,
-    load_browser: bool,
-    load_location: bool,
-    load_device: bool,
-    load_geo: bool,
 ) -> None:
     """
     Валидирует параметры загрузки данных.
 
     Args:
         limit: Количество строк для загрузки
-        full_load: Флаг полной загрузки
-        load_browser: Загружать browser_events
-        load_location: Загружать location_events
-        load_device: Загружать device_events
-        load_geo: Загружать geo_events
 
     Raises:
         AirflowException: Если параметры невалидны
@@ -262,27 +249,15 @@ def validate_load_params(
     if not isinstance(limit, int) or limit < 0:
         raise AirflowException(f"limit должен быть неотрицательным int, получено: {limit}")
 
-    # Проверка что хотя бы один поток выбран
-    if not any([load_browser, load_location, load_device, load_geo]):
-        raise AirflowException("Должен быть выбран хотя бы один поток для загрузки")
-
 
 def check_input_files(
     data_dir: str | Path = "/opt/airflow/data",
-    load_browser: bool = True,
-    load_location: bool = True,
-    load_device: bool = True,
-    load_geo: bool = True,
 ) -> None:
     """
     Проверяет наличие необходимых JSONL-файлов.
 
     Args:
         data_dir: Директория с данными
-        load_browser: Проверять browser_events.jsonl
-        load_location: Проверять location_events.jsonl
-        load_device: Проверять device_events.jsonl
-        load_geo: Проверять geo_events.jsonl
 
     Raises:
         AirflowException: Если какой-либо файл отсутствует
@@ -290,16 +265,7 @@ def check_input_files(
     from airflow.exceptions import AirflowException
 
     data_dir = Path(data_dir)
-    files_to_check = []
-
-    if load_browser:
-        files_to_check.append("browser_events.jsonl")
-    if load_location:
-        files_to_check.append("location_events.jsonl")
-    if load_device:
-        files_to_check.append("device_events.jsonl")
-    if load_geo:
-        files_to_check.append("geo_events.jsonl")
+    files_to_check = list(TOPIC_FILE_MAP.values())
 
     missing_files = []
     for filename in files_to_check:
@@ -313,30 +279,3 @@ def check_input_files(
         )
 
     logger.info("Все необходимые файлы найдены: %s", files_to_check)
-
-
-def get_topic_file_mapping(
-    load_browser: bool = True,
-    load_location: bool = True,
-    load_device: bool = True,
-    load_geo: bool = True,
-) -> dict[str, str]:
-    """
-    Возвращает маппинг топиков на файлы для выбранных потоков.
-
-    Returns:
-        Словарь {topic_name: filename}
-    """
-    result = {}
-    flags = {
-        "browser_events": load_browser,
-        "location_events": load_location,
-        "device_events": load_device,
-        "geo_events": load_geo,
-    }
-
-    for topic, filename in TOPIC_FILE_MAP.items():
-        if flags.get(topic, True):
-            result[topic] = filename
-
-    return result

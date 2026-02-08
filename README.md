@@ -106,7 +106,7 @@ flowchart TB
             DAG[DAG: ddl_init / kafka_load / etl_pipeline]
         end
 
-    Sources -->|make data| Kafka -->|MV| STG -->|Batch SQL| ODS -->|Batch SQL| DDS -->|VIEW| DM
+    Sources -->|kafka_load / make data| Kafka -->|MV| STG -->|Batch SQL| ODS -->|Batch SQL| DDS -->|VIEW| DM
     DAG -.->|оркестрация| STG & ODS & DDS & DM
 ```
 

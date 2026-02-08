@@ -33,7 +33,6 @@ docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
 Параметры `kafka_load`:
 - `limit` — количество строк (default: 0 — все строки)
 - `reset_topics` — пересоздать топики (default: true)
-- `load_browser/load_location/load_device/load_geo` — выбор потоков (default: true)
 
 **Вариант Б: Через shell-скрипт `make data` (устаревший)**
 ```bash

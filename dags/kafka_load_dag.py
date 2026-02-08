@@ -8,13 +8,8 @@ DAG для загрузки данных в Kafka из JSONL-файлов.
 - Проверка результатов через XCom
 
 Параметры (через Trigger DAG with config):
-    limit (int): Количество строк для загрузки (по умолчанию 50)
-    full_load (bool): Загрузить всё, игнорируя limit (по умолчанию False)
+    limit (int): Количество строк для загрузки (по умолчанию 0 = все)
     reset_topics (bool): Пересоздать топики (по умолчанию True)
-    load_browser (bool): Загружать browser_events (по умолчанию True)
-    load_location (bool): Загружать location_events (по умолчанию True)
-    load_device (bool): Загружать device_events (по умолчанию True)
-    load_geo (bool): Загружать geo_events (по умолчанию True)
 """
 
 from __future__ import annotations
@@ -32,7 +27,6 @@ from airflow.utils.task_group import TaskGroup
 from utils.kafka_helpers import (
     check_input_files,
     check_kafka_ready,
-    get_topic_file_mapping,
     load_jsonl,
     prepare_topics,
     validate_load_params,
@@ -62,58 +56,22 @@ def _check_kafka(**context) -> None:
 
 def _check_files(**context) -> None:
     """Проверка наличия входных файлов."""
-    conf = context.get("dag_run", {}).conf or {}
-    load_browser = bool(conf.get("load_browser", context["params"]["load_browser"]))
-    load_location = bool(conf.get("load_location", context["params"]["load_location"]))
-    load_device = bool(conf.get("load_device", context["params"]["load_device"]))
-    load_geo = bool(conf.get("load_geo", context["params"]["load_geo"]))
-
-    check_input_files(
-        data_dir=DATA_DIR,
-        load_browser=load_browser,
-        load_location=load_location,
-        load_device=load_device,
-        load_geo=load_geo,
-    )
+    check_input_files(data_dir=DATA_DIR)
 
 
 def _validate_params(**context) -> None:
     """Валидация параметров загрузки."""
     conf = context.get("dag_run", {}).conf or {}
     limit = int(conf.get("limit", context["params"]["limit"]))
-    load_browser = bool(conf.get("load_browser", context["params"]["load_browser"]))
-    load_location = bool(conf.get("load_location", context["params"]["load_location"]))
-    load_device = bool(conf.get("load_device", context["params"]["load_device"]))
-    load_geo = bool(conf.get("load_geo", context["params"]["load_geo"]))
-
-    validate_load_params(
-        limit=limit,
-        load_browser=load_browser,
-        load_location=load_location,
-        load_device=load_device,
-        load_geo=load_geo,
-    )
+    validate_load_params(limit=limit)
 
 
 def _prepare_topics(**context) -> None:
     """Подготовка топиков Kafka (создание/сброс)."""
     conf = context.get("dag_run", {}).conf or {}
     reset_topics = bool(conf.get("reset_topics", context["params"]["reset_topics"]))
-    load_browser = bool(conf.get("load_browser", context["params"]["load_browser"]))
-    load_location = bool(conf.get("load_location", context["params"]["load_location"]))
-    load_device = bool(conf.get("load_device", context["params"]["load_device"]))
-    load_geo = bool(conf.get("load_geo", context["params"]["load_geo"]))
 
-    # Получаем список топиков для загрузки
-    mapping = get_topic_file_mapping(
-        load_browser=load_browser,
-        load_location=load_location,
-        load_device=load_device,
-        load_geo=load_geo,
-    )
-    topics = list(mapping.keys())
-
-    prepare_topics(topics=topics, reset=reset_topics)
+    prepare_topics(reset=reset_topics)
 
 
 def _load_events(event_type: str, **context) -> int:
@@ -155,37 +113,16 @@ def _load_events(event_type: str, **context) -> int:
 
 def _verify_counts(**context) -> None:
     """Проверяет, что все загрузки отправили сообщения."""
-    conf = context.get("dag_run", {}).conf or {}
-    load_browser = bool(conf.get("load_browser", context["params"]["load_browser"]))
-    load_location = bool(conf.get("load_location", context["params"]["load_location"]))
-    load_device = bool(conf.get("load_device", context["params"]["load_device"]))
-    load_geo = bool(conf.get("load_geo", context["params"]["load_geo"]))
-
     ti = context["ti"]
 
     # Собираем результаты из XCom
-    results = {}
-    total_sent = 0
-
-    if load_browser:
-        count = ti.xcom_pull(task_ids="ingest.load_browser_events", key="browser_count")
-        results["browser_events"] = count or 0
-        total_sent += count or 0
-
-    if load_location:
-        count = ti.xcom_pull(task_ids="ingest.load_location_events", key="location_count")
-        results["location_events"] = count or 0
-        total_sent += count or 0
-
-    if load_device:
-        count = ti.xcom_pull(task_ids="ingest.load_device_events", key="device_count")
-        results["device_events"] = count or 0
-        total_sent += count or 0
-
-    if load_geo:
-        count = ti.xcom_pull(task_ids="ingest.load_geo_events", key="geo_count")
-        results["geo_events"] = count or 0
-        total_sent += count or 0
+    results = {
+        "browser_events": ti.xcom_pull(task_ids="ingest.load_browser_events", key="browser_count") or 0,
+        "location_events": ti.xcom_pull(task_ids="ingest.load_location_events", key="location_count") or 0,
+        "device_events": ti.xcom_pull(task_ids="ingest.load_device_events", key="device_count") or 0,
+        "geo_events": ti.xcom_pull(task_ids="ingest.load_geo_events", key="geo_count") or 0,
+    }
+    total_sent = sum(results.values())
 
     # Проверяем, что отправлено хотя бы что-то
     if total_sent == 0:
@@ -216,35 +153,10 @@ with DAG(
             type="integer",
             description="Количество строк для загрузки (0 = все строки, по умолчанию)",
         ),
-        "full_load": Param(
-            default=False,
-            type="boolean",
-            description="Загрузить все данные, игнорируя limit",
-        ),
         "reset_topics": Param(
             default=True,
             type="boolean",
             description="Пересоздать топики перед загрузкой",
-        ),
-        "load_browser": Param(
-            default=True,
-            type="boolean",
-            description="Загружать browser_events",
-        ),
-        "load_location": Param(
-            default=True,
-            type="boolean",
-            description="Загружать location_events",
-        ),
-        "load_device": Param(
-            default=True,
-            type="boolean",
-            description="Загружать device_events",
-        ),
-        "load_geo": Param(
-            default=True,
-            type="boolean",
-            description="Загружать geo_events",
         ),
     },
 ) as dag:
