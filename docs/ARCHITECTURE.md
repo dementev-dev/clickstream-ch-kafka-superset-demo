@@ -25,100 +25,79 @@
 
 ```mermaid
 flowchart LR
-    subgraph Sources["📁 Источники (JSONL)"]
-        BE[browser_events]
-        LE[location_events]
-        DE[device_events]
-        GE[geo_events]
+    subgraph AF["Airflow"]
+        DAG1["ddl_init"]
+        DAG2["kafka_load"]
+        DAG3["etl_pipeline"]
     end
 
-    subgraph Kafka["🚀 Kafka"]
-        K1[browser_events]
-        K2[location_events]
-        K3[device_events]
-        K4[geo_events]
+    subgraph Kafka["Kafka"]
+        K[4 топика]
     end
 
-    subgraph STG["📦 STG"]
-        S1[browser_raw]
-        S2[location_raw]
-        S3[device_raw]
-        S4[geo_raw]
+    subgraph STG["STG"]
+        S[*_raw таблицы]
     end
 
-    subgraph AF["⚙️ Airflow"]
-        B1[load_ods<br/>sql/ods/20_stg_to_ods.sql]
-    end
-
-    subgraph ODS["🔧 ODS"]
-        O1[browser_event]
-        O2[location_event]
-        O3[device_by_click]
-        O4[geo_by_click]
+    subgraph ODS["ODS"]
+        O[*_event таблицы]
         OE[error_tables]
     end
 
-    subgraph DDS["🎯 DDS"]
-        DE1[event]
-        DC1[click]
+    subgraph DDS["DDS"]
+        D1[event]
+        D2[click]
     end
 
-    subgraph DM["📊 DM"]
-        DM1[v_events_enriched]
-        DM2[v_daily_traffic]
-        DM3[v_utm_effectiveness]
-        DM4[v_top_pages]
+    subgraph DM["DM"]
+        V[витрины VIEW]
     end
 
-    BE --> K1 --> S1
-    LE --> K2 --> S2
-    DE --> K3 --> S3
-    GE --> K4 --> S4
+    DAG2 -->|JSONL| K -->|MV| S
+    S -->|batch| O
+    O -->|argMax + JOIN| D1 & D2
+    O -.->|ошибки| OE
+    D1 & D2 -->|VIEW| V
 
-    S1 & S2 & S3 & S4 -->|Batch SQL| B1
-    B1 --> O1 & O2 & O3 & O4
-    B1 -.-> OE
-    O1 --> DE1
-    O2 --> DE1
-    O3 --> DC1
-    O4 --> DC1
-    DE1 --> DM1
-    DC1 --> DM1
-    DE1 --> DM2 & DM3 & DM4
-    DC1 --> DM2 & DM3 & DM4
+    DAG1 -.->|DDL| STG & ODS & DDS & DM
+    DAG3 -.->|batch| ODS & DDS
 ```
 
 ### Слои и их назначение
 
 ```mermaid
-flowchart TB
-    subgraph L0["📝 Источники"]
-        RAW["JSON файлы (1000 строк)"]
+flowchart LR
+    subgraph AF["Airflow"]
+        DAG1["ddl_init"]
+        DAG2["kafka_load"]
+        DAG3["etl_pipeline"]
     end
 
-    subgraph L1["📦 STG - Staging"]
-        direction LR
+    subgraph L1["STG"]
         KAFKA["Kafka Engine"]
-        STG_T["*_raw таблицы<br/>(MergeTree)"]
+        STG_T["*_raw таблицы"]
     end
 
-    subgraph L2["🔧 ODS - Операционный слой"]
-        direction LR
-        ODS_T["Типизированные таблицы<br/>(ReplacingMergeTree)"]
-        DQ["parse_errors<br/>DQ-метрики"]
+    subgraph L2["ODS"]
+        ODS_T["Типизированные таблицы"]
+        DQ["parse_errors"]
     end
 
-    subgraph L3["🎯 DDS - Детальный слой"]
-        DDS_T["event + click<br/>(Batch SQL)"]
+    subgraph L3["DDS"]
+        DDS_T["event + click"]
     end
 
-    subgraph L4["📊 DM - Витрины"]
-        DM_T["VIEW для BI<br/>(Superset/Grafana)"]
+    subgraph L4["DM"]
+        DM_T["VIEW"]
     end
 
-    RAW -->|kafka-console-producer| KAFKA -->|MV| STG_T -->|Batch SQL (Airflow)| ODS_T
+    DAG2 -->|JSONL| KAFKA -->|MV| STG_T
+    STG_T -->|batch| ODS_T
     ODS_T -->|argMax + JOIN| DDS_T -->|VIEW| DM_T
     ODS_T -.->|ошибки| DQ
+
+    DAG1 -.->|DDL| L1 & L2 & L3 & L4
+    DAG3 -.->|batch| ODS_T & DDS_T
 ```
 
 ---
@@ -167,7 +146,7 @@ CREATE TABLE stg.browser_raw (
 | `location_event` | event_id | ReplacingMergeTree(src_ingest_ts) | Данные страниц |
 | `device_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Устройства |
 | `geo_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Гео-данные |
-| `*_errors` | — | MergeTree | Строки с битыми ключами |
+| `*_errors` | — | MergeTree | Строки с критичными ошибками парсинга |
 
 **Batch шаг наполнения ODS:**
 
@@ -179,8 +158,8 @@ CREATE TABLE stg.browser_raw (
 | `INSERT ... SELECT` в `*_errors` | Сохранение строк с критичными ошибками парсинга |
 
 **Логика разделения:**
-- **Основная таблица**: строки с валидными ключами (`WHERE key IS NOT NULL`)
-- **Таблица ошибок**: строки с невалидными ключами (`WHERE key IS NULL`)
+- **Основная таблица**: строки с валидным business key (`WHERE key IS NOT NULL`).
+- **Таблица ошибок**: строки с критичными ошибками (невалидный key, timestamp/координаты и т.п.) через отдельный `INSERT ... SELECT`.
 
 **Пример структуры:**
 ```sql
@@ -365,7 +344,7 @@ FROM ...
 ```mermaid
 sequenceDiagram
     participant User as Пользователь
-    participant Make as Makefile
+    participant Compose as Docker Compose
     participant Airflow as Airflow
     participant K as Kafka
     participant CH as ClickHouse
@@ -374,24 +353,24 @@ sequenceDiagram
     participant DDS as dds.*
     participant DM as dm.*
 
-    User->>Make: make up
-    Make->>K: docker compose up kafka
-    Make->>CH: docker compose up clickhouse
-    K-->>User: ✅ Инфраструктура готова
+    User->>Compose: make up
+    Compose->>K: docker compose up -d kafka
+    Compose->>CH: docker compose up -d clickhouse
+    Compose->>Airflow: docker compose up -d airflow-*
+    Compose-->>User: ✅ Инфраструктура готова
 
-    User->>Make: make ddl
-    Make->>CH: sql/ddl/00_databases.sql
-    Make->>CH: sql/ddl/stg/10_stg.sql (Kafka Engine)
-    Make->>CH: sql/ddl/ods/20_ods.sql (таблицы ODS + drop legacy MV)
-    Make->>CH: sql/ddl/dds/30_dds.sql
-    Make->>CH: sql/ddl/dm/40_dm.sql
+    User->>Airflow: Trigger ddl_init
+    Airflow->>CH: sql/ddl/00_databases.sql
+    Airflow->>CH: sql/ddl/stg/10_stg.sql (Kafka Engine + MV)
+    Airflow->>CH: sql/ddl/ods/20_ods.sql
+    Airflow->>CH: sql/ddl/dds/30_dds.sql
+    Airflow->>CH: sql/ddl/dm/40_dm.sql
     CH-->>User: ✅ Структура БД создана
 
-    User->>Make: make data
-    Make->>K: load_kafka_data.sh
-    K->>K: Создание топиков
+    User->>Airflow: Trigger kafka_load
+    Airflow->>K: precheck + prepare_topics
     loop 4 файла
-        Make->>K: kafka-console-producer
+        Airflow->>K: KafkaProducer.send(topic, json_line)
     end
     K->>CH: Потребление сообщений
     CH->>STG: INSERT через MV
@@ -476,8 +455,8 @@ flowchart LR
         EV["event"]
     end
 
-    B -->|JOIN по event_id| EV
-    L -->|JOIN по event_id| EV
+    B -->|JOIN event_id| EV
+    L -->|JOIN event_id| EV
 ```
 
 **click** (device + geo) с поддержкой partial data:
@@ -489,7 +468,7 @@ flowchart LR
     end
 
     subgraph BUILD["Batch SQL"]
-        U["UNION DISTINCT<br/>click_id"]
+        U["UNION DISTINCT click_id"]
         J["LEFT JOIN"]
     end
 
@@ -535,11 +514,11 @@ flowchart LR
 
 ### Обработка ошибок в ODS
 
-**Проблема:** Грязные данные с невалидными ключами (NULL event_id/click_id).
+**Проблема:** Грязные данные могут содержать не только невалидные ключи, но и невалидные timestamp/координаты/ID.
 
 **Решение:**
-1. **Основная таблица**: только валидные строки (`WHERE key IS NOT NULL`)
-2. **Таблица ошибок**: строки с невалидными ключами через отдельные `INSERT ... SELECT`
+1. **Основная таблица**: строки с валидным business key (`WHERE key IS NOT NULL`)
+2. **Таблица ошибок**: строки с критичными ошибками парсинга через отдельные `INSERT ... SELECT`
 3. **DQ-метрики**: массив `parse_errors` для аудита
 
 ```sql
@@ -549,7 +528,8 @@ SELECT ... FROM stg.browser_raw WHERE event_id IS NOT NULL;
 
 -- Таблица ошибок
 INSERT INTO ods.browser_event_errors
-SELECT ... FROM stg.browser_raw WHERE event_id IS NULL;
+SELECT ... FROM stg.browser_raw
+WHERE event_id IS NULL OR event_ts IS NULL OR click_id IS NULL;
 ```
 
 ### Partial data в DDS
@@ -598,21 +578,30 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 Инфраструктура Airflow развёрнута и готова к использованию:
 
 ```python
-# dags/ddl_init_dag.py и dags/etl_pipeline_dag.py
-#
+# dags/ddl_init_dag.py — создание баз/таблиц (ручной запуск при bootstrap)
+# dags/kafka_load_dag.py — загрузка JSONL в Kafka (через kafka-python)
+# dags/etl_pipeline_dag.py — основной ETL (STG→ODS→DDS→DM)
+
 # Учебный формат:
 # - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
 # - SQL-файлы вызываются по фиксированным путям;
-# - загрузка данных в Kafka (Этап 1) выполняется через `make data`.
+# - загрузка данных в Kafka выполняется через DAG `kafka_load`.
 #
 # Основной demo-сценарий:
-# ddl_init -> make data -> etl_pipeline
+# ddl_init -> kafka_load -> etl_pipeline
 ```
+
+**DAG `kafka_load`**:
+- Загрузка данных из `data/*.jsonl` в Kafka через `kafka-python`
+- TaskGroup `precheck`: проверка Kafka, файлов, параметров
+- TaskGroup `ingest`: создание топиков → параллельная загрузка 4 потоков → проверка
+- Параметры: `limit` (0 = все), `reset_topics`
 
 **Подключение к ClickHouse:**
 - Connection: `clickhouse_default`
 - URL: `clickhouse://default:123456@clickhouse:9000/default` (native TCP для Airflow plugin)
 - Provider/интеграция: `airflow-clickhouse-plugin` (в `airflow/requirements.txt`), задачи выполняются через `ClickHouseOperator`.
+- Дополнительно: `kafka-python==2.0.6` для работы с Kafka из DAG.
 - Примечание: Superset подключается к ClickHouse по HTTP (обычно `clickhouse+connect://...:8123/...`).
 
 ---

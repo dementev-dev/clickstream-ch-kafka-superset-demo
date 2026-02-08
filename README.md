@@ -9,7 +9,7 @@
 Фокус проекта: быстро показать работающий end-to-end сценарий и понятным языком объяснить, как устроены слои и почему пайплайн не падает на "грязных" данных.
 
 Коротко про поток:
-`data/*.jsonl` -> Kafka (1 строка = 1 сообщение) -> ClickHouse `stg` (сырые JSON) -> Airflow batch `stg -> ods -> dds -> dm` -> Superset.
+`data/*.jsonl` -> Airflow DAG `kafka_load` -> Kafka (1 строка = 1 сообщение) -> ClickHouse `stg` (сырые JSON) -> Airflow DAG `etl_pipeline` (`stg -> ods -> dds -> dm`) -> Superset.
 
 ---
 
@@ -33,10 +33,15 @@ docker compose ps
 docker compose exec -T airflow-webserver airflow dags trigger ddl_init
 ```
 
-Загрузка небольшого среза данных в Kafka:
+Загрузка данных в Kafka через Airflow DAG:
 ```bash
-make data            # по умолчанию первые 50 строк
-# или: FULL=1 make data    # полный датасет (1000 строк)
+# Полная загрузка (по умолчанию limit=0)
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"reset_topics": true}'
+
+# Ограниченная загрузка — первые 100 строк
+docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
+  --conf '{"limit": 100, "reset_topics": true}'
 ```
 
 Запуск batch-трансформации (STG -> ODS -> DDS -> DM) в Airflow (если DAG выключен, сначала unpause):
@@ -75,31 +80,29 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 ## Архитектура (в двух словах)
 
 ```mermaid
-flowchart TB
-    subgraph Sources["JSONL файлы"]
-        BE[browser_events.jsonl]
-        LE[location_events.jsonl]
-        DE[device_events.jsonl]
-        GE[geo_events.jsonl]
+flowchart LR
+    subgraph AF["Airflow"]
+        D1["ddl_init"]
+        D2["kafka_load"]
+        D3["etl_pipeline"]
     end
 
     subgraph Kafka["Kafka"]
-        KT[Топики]
+        Topics[4 топика]
     end
 
     subgraph CH["ClickHouse"]
-        STG["stg: сырьё + Kafka MV"]
-        ODS["ods: типизация + DQ"]
-        DDS["dds: сущности"]
-        DM["dm: витрины (VIEW)"]
+        STG["STG: сырые данные"]
+        ODS["ODS: типизация + DQ"]
+        DDS["DDS: сущности"]
+        DM["DM: витрины VIEW"]
     end
 
-    subgraph Airflow["Airflow"]
-        DAG[DAG: ddl_init / etl_pipeline]
-    end
+    D2 -->|загрузка JSONL| Kafka -->|Kafka MV| STG
+    STG -->|batch| ODS -->|batch| DDS -->|VIEW| DM
 
-    Sources -->|make data| Kafka -->|MV| STG -->|Batch SQL| ODS -->|Batch SQL| DDS -->|VIEW| DM
-    DAG -.->|оркестрация| STG & ODS & DDS & DM
+    D1 -.->|DDL| CH
+    D3 -.->|batch| ODS & DDS
 ```
 
 Особенность задания про "грязные данные": парсинг не валит pipeline, ошибки фиксируются в `ods.*_errors` и в поле `parse_errors`.
@@ -123,14 +126,14 @@ flowchart TB
 │   ├── ods/          # Batch SQL: STG -> ODS
 │   ├── dds/          # Batch SQL: ODS -> DDS
 │   └── dm/           # Batch SQL: DDS -> DM
-├── scripts/          # Автоматизация (apply ddl, load data, run batch)
+├── scripts/          # Служебные shell-скрипты (legacy fallback, не основной путь)
 ├── airflow/          # Конфигурация Airflow
 │   └── requirements.txt
 ├── docs/             # Документация
 │   └── ARCHITECTURE.md   # Подробное описание слоёв
 ├── data/             # Исходные JSONL файлы
 ├── docker-compose.yml
-└── Makefile          # Команды: up, ddl, data, transform
+└── Makefile          # Команды: up, ddl, transform
 ```
 
 ---
@@ -141,8 +144,6 @@ flowchart TB
 |---------|----------|
 | `make up` | Поднять инфраструктуру |
 | `make ddl` | Применить DDL в ClickHouse (вне Airflow) |
-| `make data` | Загрузить данные в Kafka (50 строк) |
-| `FULL=1 make data` | Загрузить полный датасет |
 | `make transform` | Запустить batch-процесс `STG -> ODS -> DDS -> DM` (вне Airflow) |
 
 Примечания про сохранность данных:
@@ -206,7 +207,7 @@ flowchart LR
 ## Частые проблемы
 
 - `etl_pipeline` падает с сообщением про схему: сначала запустите `ddl_init`.
-- После `docker compose down -v` схема и данные исчезнут: нужно заново `ddl_init` и `make data`.
+- После `docker compose down -v` схема и данные исчезнут: нужно заново запустить `ddl_init`, затем `kafka_load`, затем `etl_pipeline`.
 - Подключения используют разные протоколы:
   - Airflow (ClickHouseOperator) ходит в ClickHouse по native TCP (порт `9000` внутри сети Docker).
   - Superset (clickhouse-connect) ходит по HTTP (порт `8123` внутри сети Docker).
@@ -215,13 +216,13 @@ flowchart LR
 
 ## Статус проекта
 
-Реализовано (Этап 1):
+Реализовано:
 - DAG `ddl_init`: последовательное применение DDL + проверка схемы.
+- DAG `kafka_load`: ingest из `.jsonl` в Kafka через `kafka-python` (параметры `limit`, `reset_topics`).
 - DAG `etl_pipeline`: precheck, ожидание данных в STG, batch-пересчёт ODS/DDS/DM, базовые проверки.
 - Устойчивость к "грязным" данным: ошибки парсинга сохраняются в ODS, а не валят ingest.
 
 В планах (не требуется для MVP задания):
-- DAG `kafka_load` (чистый ingest из `.jsonl` в Kafka средствами Airflow).
 - Инкрементальный batch (watermark вместо `full_refresh`).
 - DQ мониторинг по расписанию.
 

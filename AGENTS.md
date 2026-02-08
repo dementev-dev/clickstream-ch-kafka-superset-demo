@@ -20,7 +20,11 @@
 ## Ключевые артефакты
 
 ### Исполняемые файлы (текущая структура)
-- `dags/` — Airflow DAGs для оркестрации ETL
+- `dags/` — Airflow DAGs для оркестрации ETL:
+  - `dags/ddl_init_dag.py` — инициализация схемы ClickHouse
+  - `dags/etl_pipeline_dag.py` — ETL процесс STG → ODS → DDS → DM
+  - `dags/kafka_load_dag.py` — загрузка данных в Kafka из JSONL
+  - `dags/utils/kafka_helpers.py` — helper-функции для работы с Kafka
 - `sql/` — SQL по слоям:
   - `sql/ddl/00_databases.sql` — создание БД stg/ods/dds/dm
   - `sql/ddl/stg/10_stg.sql` — STG слой (Kafka Engine + MV)
@@ -92,12 +96,61 @@
   - Bash: шапка с назначением/запуском/требованиями, секции разделены `# -----`
   - См. существующие файлы как пример (`sql/ddl/ods/20_ods.sql`, `sql/dds/30_ods_to_dds.sql`, `scripts/run_batch.sh`)
 
+## Airflow DAGs
+
+### `ddl_init` — Инициализация схемы
+- Запуск: ручной (Trigger DAG)
+- Параметры: `verify_only` (bool, default false)
+- Описание: Создаёт БД и таблицы в ClickHouse от 00_databases до 40_dm
+
+### `kafka_load` — Загрузка в Kafka
+- Запуск: ручный (Trigger DAG with config)
+- Параметры:
+  - `limit` (int, default 0) — количество строк (0 = все)
+  - `reset_topics` (bool, default true) — пересоздать топики
+- Примеры запуска:
+  ```json
+  // Полная загрузка (по умолчанию)
+  {}
+  // Ограниченная загрузка — 100 строк
+  {"limit": 100}
+  ```
+
+### `etl_pipeline` — ETL процесс
+- Запуск: ручной (Trigger DAG with config)
+- Параметры:
+  - `full_refresh` (bool, default true) — очистить DDS перед загрузкой
+- Зависимость: требует наличия данных в STG (от `kafka_load` или `make data`)
+
 ## Быстрые проверки
 
 - Kafka ingest: наличие данных в `stg.*` и типизированных строк в `ods.*`.
 - Мониторинг: доступность `/metrics` у ClickHouse и скрейп в Prometheus.
-- **Airflow: `http://localhost:8080` должен показывать UI и DAG `ddl_init` и `etl_pipeline`.**
+- **Airflow: `http://localhost:8080` должен показывать UI и DAG `ddl_init`, `kafka_load` и `etl_pipeline`.**
 - BI: витрина `dm.v_events_enriched` должна отвечать за разумное время при фильтре по дате.
+
+## Сценарий работы с Airflow (фаза 2)
+
+```bash
+# 1. Запуск инфраструктуры
+make up
+
+# 2. Инициализация схемы (один раз)
+# Airflow UI → DAGs → ddl_init → Trigger DAG
+
+# 3. Загрузка данных через Airflow (вместо make data)
+# Airflow UI → DAGs → kafka_load → Trigger DAG with config
+# Параметры по умолчанию: limit=0 (полная загрузка), reset_topics=true
+
+# 4. Запуск ETL
+# Airflow UI → DAGs → etl_pipeline → Trigger DAG with config
+# {"full_refresh": true}
+
+# 5. Проверка результатов
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM ods.browser_event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dds.event"
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT * FROM dm.dq_summary"
+```
 
 ## Связанная документация
 

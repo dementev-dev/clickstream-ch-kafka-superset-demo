@@ -61,20 +61,15 @@ check_clickhouse >> ddl_00_databases >> ddl_10_stg >> ddl_20_ods >> ddl_30_dds >
 
 ## Дизайн DAG `kafka_load` (отдельный независимый контур)
 ### Params (через Trigger DAG with config)
-- `limit`: int, default `50`.
-- `full_load`: bool, default `false`.
+- `limit`: int, default `0` (0 = все строки).
 - `reset_topics`: bool, default `true`.
-- `load_browser`: bool, default `true`.
-- `load_location`: bool, default `true`.
-- `load_device`: bool, default `true`.
-- `load_geo`: bool, default `true`.
 
 ### TaskGroup `precheck`
 | Task ID | Что делает | Реализация |
 |---------|------------|------------|
 | `check_kafka` | Проверка доступности Kafka broker | `PythonOperator` + `kafka-python` |
 | `check_input_files` | Проверка наличия `data/*_events.jsonl` | `PythonOperator` |
-| `validate_load_params` | Валидация параметров загрузки (`limit`, `full_load`, флаги потоков) | `PythonOperator` |
+| `validate_load_params` | Валидация параметров загрузки (`limit`) | `PythonOperator` |
 
 ### TaskGroup `ingest`
 | Task ID | Что делает | Реализация |
@@ -84,7 +79,7 @@ check_clickhouse >> ddl_00_databases >> ddl_10_stg >> ddl_20_ods >> ddl_30_dds >
 | `load_location_events` | Публикация `location_events.jsonl` | `PythonOperator` + KafkaProducer |
 | `load_device_events` | Публикация `device_events.jsonl` | `PythonOperator` + KafkaProducer |
 | `load_geo_events` | Публикация `geo_events.jsonl` | `PythonOperator` + KafkaProducer |
-| `verify_publish_counts` | Проверка, что отправлено > 0 сообщений в выбранные потоки | `PythonOperator` (по XCom) |
+| `verify_publish_counts` | Проверка, что отправлено > 0 сообщений в сумме | `PythonOperator` (по XCom) |
 
 Зависимости:
 ```text
@@ -136,7 +131,7 @@ ddl_init -> kafka_load -> etl_pipeline
 ```
 
 Экспериментальные сценарии:
-- `kafka_load` отдельно: проверить разные наборы/параметры загрузки без запуска transform.
+- `kafka_load` отдельно: проверить разные параметры загрузки без запуска transform.
 - `etl_pipeline` отдельно: повторно пересчитать DDS/DM по уже загруженным данным.
 
 ## Техническая реализация (приземленно)
@@ -157,7 +152,7 @@ ddl_init -> kafka_load -> etl_pipeline
   - `fetch_one(sql: str) -> tuple`
 - `dags/utils/kafka_helpers.py`:
   - `prepare_topics(reset: bool) -> None`
-  - `load_jsonl(file_path: str, topic: str, limit: int, full_load: bool) -> int`
+  - `load_jsonl(file_path: str, topic: str, limit: int) -> int`
   - `check_kafka_ready() -> None`
 
 ## Структура файлов
@@ -182,7 +177,7 @@ dags/
 2. Этап 2:
    - Реализовать отдельный DAG `kafka_load` на `kafka-python`.
    - Перенести загрузку из `make data` в `kafka_load` (функциональный паритет).
-   - Добавить в `kafka_load` расширенные параметры экспериментов (выбор потоков, сценарии reset/no-reset).
+   - Добавить в `kafka_load` параметры экспериментов по объёму и reset/no-reset.
    - Добавить опциональный параметр автотриггера `etl_pipeline` (по умолчанию `false`).
 3. Этап 3:
    - Добавить `dq_monitor` и alert callback (email/Slack/webhook).
@@ -226,7 +221,7 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dm.dq_summary"
 
 # 7) Этап 2: после реализации kafka_load
-# Trigger DAG kafka_load {"limit": 50, "full_load": false, "reset_topics": true}
+# Trigger DAG kafka_load {"limit": 50, "reset_topics": true}
 # Trigger DAG etl_pipeline {"full_refresh": true}
 ```
 
