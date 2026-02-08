@@ -277,7 +277,7 @@
             "type": "prometheus",
             "uid": "prometheus_uid"
           },
-          "expr": "count(count by (group) (kafka_consumergroup_lag))",
+          "expr": "count(count by (consumergroup) (kafka_consumergroup_lag))",
           "refId": "A"
         }
       ],
@@ -378,8 +378,8 @@
             "type": "prometheus",
             "uid": "prometheus_uid"
           },
-          "expr": "kafka_topic_partition_current_offset",
-          "legendFormat": "{{topic}} - p{{partition}}",
+          "expr": "sum by(topic) (rate(kafka_topic_partition_current_offset{topic!~\"__.*\"}[5m]))",
+          "legendFormat": "{{topic}}",
           "refId": "A"
         }
       ],
@@ -478,7 +478,7 @@
             "uid": "prometheus_uid"
           },
           "expr": "kafka_consumergroup_lag",
-          "legendFormat": "{{group}} - {{topic}}:{{partition}}",
+          "legendFormat": "{{consumergroup}} - {{topic}}:{{partition}}",
           "refId": "A"
         }
       ],

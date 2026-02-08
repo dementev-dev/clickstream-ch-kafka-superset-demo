@@ -200,7 +200,7 @@ curl -s "http://localhost:9090/api/v1/query?query=ClickHouseProfileEvents_Query"
 
 # Prometheus собирает метрики Kafka
 curl -s "http://localhost:9090/api/v1/query?query=kafka_brokers"
-curl -s "http://localhost:9090/api/v1/query?query=kafka_consumer_group_lag"
+curl -s "http://localhost:9090/api/v1/query?query=kafka_consumergroup_lag"
 
 # Прямая проверка kafka-exporter
 curl -s http://localhost:9308/metrics | grep "^kafka_"
@@ -227,9 +227,9 @@ curl -s "http://localhost:9090/api/v1/query?query=ClickHouseProfileEvents_Query"
 
 Настроены правила:
 - `Kafka Broker Down` — `kafka_brokers < 1` в течение `1m`
-- `Kafka Consumer Lag High` — `kafka_consumer_group_lag > 10000` в течение `5m`
+- `Kafka Consumer Lag High` — `kafka_consumergroup_lag > 10000` в течение `5m`
 - `Kafka No Messages Produced` — `rate(kafka_topic_partition_current_offset[5m]) < 0.1` в течение `10m`
-- `Kafka Consumer Group Missing` — пропала консьюмер-группа в течение `5m`
+- `Kafka Consumer Group Missing` не включён: для демо-стенда даёт шум на стартовых прогонах и не повышает диагностику по сравнению с lag/throughput.
 
 Проверка и reload без рестарта контейнера:
 

@@ -102,10 +102,10 @@ groups:
                 type: prometheus
                 uid: prometheus_uid
               editorMode: code
-              expr: kafka_consumer_group_lag
+              expr: kafka_consumergroup_lag
               instant: false
               intervalMs: 1000
-              legendFormat: "{{ group }} - {{ topic }}:{{ partition }}"
+              legendFormat: "{{ consumergroup }} - {{ topic }}:{{ partition }}"
               maxDataPoints: 43200
               range: true
               refId: A
@@ -163,7 +163,7 @@ groups:
         execErrState: Error
         for: 5m
         annotations:
-          summary: "Высокий лаг консьюмера {{ $labels.group }}"
+          summary: "Высокий лаг консьюмера {{ $labels.consumergroup }}"
           description: "Lag для {{ $labels.topic }}:{{ $labels.partition }} составляет {{ $values.A }} сообщений (порог: 10000)"
         labels:
           severity: warning
@@ -248,34 +248,3 @@ groups:
           description: "Rate сообщений < 0.1 msg/sec в течение 10 минут"
         labels:
           severity: warning
-
-      # --- Alert: Consumer Group Missing ---
-      - uid: kafka_consumer_group_missing
-        title: Kafka Consumer Group Missing
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange:
-              from: 300
-              to: 0
-            datasourceUid: prometheus_uid
-            model:
-              datasource:
-                type: prometheus
-                uid: prometheus_uid
-              editorMode: code
-              expr: count by (group) (kafka_consumer_group_lag)
-              instant: true
-              intervalMs: 1000
-              legendFormat: "{{ group }}"
-              maxDataPoints: 43200
-              range: false
-              refId: A
-        noDataState: Alerting
-        execErrState: Error
-        for: 5m
-        annotations:
-          summary: "Пропала консьюмер-группа"
-          description: "Консьюмер-группа не обнаружена в течение 5 минут"
-        labels:
-          severity: info
