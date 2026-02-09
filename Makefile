@@ -1,9 +1,17 @@
-.PHONY: up ddl data transform reload-monitoring recover-monitoring
+.PHONY: up down clean ddl data transform reload-monitoring recover-monitoring
 
 COMPOSE ?= docker compose
 
 up:
 	$(COMPOSE) up -d
+
+# Остановить и удалить контейнеры/сети текущего проекта
+down:
+	$(COMPOSE) down
+
+# Полная очистка окружения проекта (включая volumes)
+clean:
+	$(COMPOSE) down -v --remove-orphans
 
 ddl:
 	bash ./scripts/apply_clickhouse_ddl.sh
