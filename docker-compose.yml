@@ -35,6 +35,7 @@ services:
     ports:
       - "8002:9000"
       - "9123:8123"
+      - "9126:9126"  # ClickHouse Prometheus metrics endpoint
 
   kafka:
     image: apache/kafka:3.8.0

@@ -7,6 +7,8 @@
 Базовые команды:
 
 - `make up` (или `docker compose up -d`)
+- `make down` (остановить и удалить контейнеры/сети проекта)
+- `make clean` (полная очистка: `down -v --remove-orphans`)
 - `make ddl` (применяет SQL из `sql/ddl/00_databases.sql` и `sql/ddl/*/*.sql` в ClickHouse)
 - `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
 - `make transform` (запускает batch-процесс ODS -> DDS -> DM)
@@ -95,6 +97,8 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 ```bash
 # Быстрый вариант (make)
 make reload-monitoring
+# Если мониторинг "залип" (No data/out of bounds) — жесткое восстановление:
+make recover-monitoring
 
 # Или вручную:
 docker compose up -d prometheus grafana kafka-exporter statsd-exporter
@@ -136,10 +140,13 @@ curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
 ```bash
 # Рекомендуемый способ (через make)
 make reload-monitoring
+# Если метрики пропали/залипли:
+make recover-monitoring
 
 # Или вручную:
-docker compose up -d prometheus grafana kafka-exporter
-docker compose restart prometheus
+docker compose rm -sf prometheus statsd-exporter
+docker compose up -d prometheus grafana kafka-exporter statsd-exporter
+docker compose restart airflow-scheduler airflow-webserver
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
 curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload
@@ -248,6 +255,7 @@ curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/aler
 **Общие проблемы:**
 - **"No data" в Grafana**: проверить, что Prometheus видит target (`Status -> Targets` в UI)
 - **Dashboard не загрузился**: проверить логи Grafana — provisioning работает при первом старте контейнера
+- **Prometheus spam `out of bounds` и дашборды пустые**: выполнить `make recover-monitoring`
 
 **ClickHouse:**
 - **Метрики не обновляются**: ClickHouse экспортирует метрики на `0.0.0.0:9126` внутри сети Docker

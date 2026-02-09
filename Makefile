@@ -1,9 +1,17 @@
-.PHONY: up ddl data transform reload-monitoring
+.PHONY: up down clean ddl data transform reload-monitoring recover-monitoring
 
 COMPOSE ?= docker compose
 
 up:
 	$(COMPOSE) up -d
+
+# Остановить и удалить контейнеры/сети текущего проекта
+down:
+	$(COMPOSE) down
+
+# Полная очистка окружения проекта (включая volumes)
+clean:
+	$(COMPOSE) down -v --remove-orphans
 
 ddl:
 	bash ./scripts/apply_clickhouse_ddl.sh
@@ -26,3 +34,18 @@ reload-monitoring:
 	@curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload && echo " [alerting]"
 	@echo "=== Проверка ==="
 	@curl -s http://localhost:9090/api/v1/targets | grep -o '"job":"[^"]*"' | sort | uniq
+
+# Восстановление мониторинга после сбоев (например, out of bounds / пустые дашборды)
+recover-monitoring:
+	@echo "=== Восстановление мониторинга (жесткий режим) ==="
+	$(COMPOSE) rm -sf prometheus statsd-exporter
+	$(COMPOSE) up -d prometheus grafana kafka-exporter statsd-exporter
+	$(COMPOSE) restart airflow-scheduler airflow-webserver
+	@echo "=== Перезагрузка provisioning Grafana ==="
+	@sleep 2
+	@curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/datasources/reload && echo " [datasources]"
+	@curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload && echo " [dashboards]"
+	@curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/alerting/reload && echo " [alerting]"
+	@echo "=== Проверка targets ==="
+	@curl -s http://localhost:9090/api/v1/targets | grep -o '"job":"[^"]*"' | sort | uniq
+	@curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"' | sort | uniq -c
