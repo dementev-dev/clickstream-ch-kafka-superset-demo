@@ -24,12 +24,11 @@
 ================================================================================
 """
 
-import os
 import sys
-import json
+import os
 import logging
 import subprocess
-from typing import Optional
+from urllib.parse import quote_plus
 
 # Настройка логирования
 logging.basicConfig(
@@ -40,6 +39,22 @@ logger = logging.getLogger(__name__)
 
 # Добавляем путь к superset
 sys.path.insert(0, '/app')
+
+CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'default')
+CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '123456')
+CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'clickhouse')
+CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_HTTP_PORT', '8123')
+CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'default')
+
+
+def build_clickhouse_uri() -> str:
+    """Собирает URI подключения к ClickHouse для Superset."""
+    user = quote_plus(CLICKHOUSE_USER)
+    password = quote_plus(CLICKHOUSE_PASSWORD)
+    host = CLICKHOUSE_HOST
+    port = CLICKHOUSE_PORT
+    database = quote_plus(CLICKHOUSE_DATABASE)
+    return f"clickhousedb://{user}:{password}@{host}:{port}/{database}"
 
 
 def run_superset_cli(args):
@@ -57,13 +72,14 @@ def run_superset_cli(args):
 def create_clickhouse_connection():
     """Создание подключения к ClickHouse через CLI"""
     logger.info("Creating ClickHouse database connection...")
+    database_uri = build_clickhouse_uri()
     
     # Создаем подключение через set-database-uri
     # clickhouse-connect использует HTTP порт 8123 внутри Docker сети
     success, stdout, stderr = run_superset_cli([
         'set-database-uri',
         '-d', 'clickhouse_dwh',
-        '-u', 'clickhouse+connect://default@clickhouse:8123/default'
+        '-u', database_uri
     ])
     
     if success:
@@ -74,7 +90,7 @@ def create_clickhouse_connection():
         logger.info("Please create manually via UI:")
         logger.info("1. Go to: Settings → Database Connections → + Database")
         logger.info("2. Select: ClickHouse")
-        logger.info("3. URI: clickhouse+connect://default@clickhouse:8123/default")
+        logger.info(f"3. URI: {database_uri}")
         return False
 
 
@@ -136,31 +152,65 @@ def import_datasets():
         "print(f'Found database: {database.database_name} (id={database.id})')",
         "",
         "imported = 0",
+        "refreshed = 0",
+        "errors = 0",
     ]
     
     for ds in datasets:
+        table_name = ds["table_name"]
+        schema_name = ds["schema"]
+        description = ds["description"]
         script_lines.extend([
             "",
-            f"# Dataset: {ds['table_name']}",
-            f"existing = db.session.query(SqlaTable).filter_by(table_name='{ds['table_name']}', schema='{ds['schema']}').first()",
+            f"# Dataset: {table_name}",
+            (
+                "existing = db.session.query(SqlaTable).filter_by("
+                f"table_name={table_name!r}, schema={schema_name!r}"
+                ").first()"
+            ),
             "if existing:",
-            f"    print(f'Dataset {ds['table_name']} already exists')",
+            "    try:",
+            "        if not existing.columns:",
+            "            existing.fetch_metadata()",
+            "            db.session.commit()",
+            f"            print('Refreshed dataset metadata: {table_name}')",
+            "            refreshed += 1",
+            "        else:",
+            f"            print('Dataset {table_name} already exists')",
+            "    except Exception as e:",
+            f"        print(f'ERROR: failed to refresh {table_name}: {{e}}')",
+            "        db.session.rollback()",
+            "        errors += 1",
             "else:",
             "    try:",
-            f"        dataset = SqlaTable(table_name='{ds['table_name']}', schema='{ds['schema']}', database_id=database.id, database=database, description='{ds['description']}')",
+            (
+                "        dataset = SqlaTable("
+                f"table_name={table_name!r}, "
+                f"schema={schema_name!r}, "
+                "database_id=database.id, "
+                "database=database, "
+                f"description={description!r}"
+                ")"
+            ),
             "        db.session.add(dataset)",
             "        db.session.flush()",
-            f"        print(f'Created dataset: {ds['table_name']}')",
+            "        dataset.fetch_metadata()",
+            "        db.session.commit()",
+            f"        print('Created dataset: {table_name}')",
             "        imported += 1",
             "    except Exception as e:",
-            f"        print(f'Error creating {ds['table_name']}: {{e}}')",
+            f"        print(f'ERROR: failed to create {table_name}: {{e}}')",
             "        db.session.rollback()",
+            "        errors += 1",
         ])
     
     script_lines.extend([
         "",
-        "db.session.commit()",
         "print(f'Successfully imported {imported} datasets')",
+        "print(f'Refreshed metadata for {refreshed} datasets')",
+        "print(f'Errors: {errors}')",
+        "if errors > 0:",
+        "    raise SystemExit(1)",
     ])
     
     script_content = '\n'.join(script_lines)

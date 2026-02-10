@@ -93,7 +93,7 @@ make superset-dashboard
 # Основные
 make up          # Запуск всех сервисов
 make down        # Остановка сервисов
-make down-v      # Остановка с удалением volumes
+make clean      # Остановка с удалением volumes
 make logs service=superset  # Логи сервиса
 
 # ETL
@@ -120,7 +120,7 @@ make superset-restart   # Перезапуск сервиса
 3. Выберите **ClickHouse**
 4. Введите SQLAlchemy URI:
    ```
-   clickhouse+native://default@clickhouse:9000/default
+   clickhousedb://default:123456@clickhouse:8123/default
    ```
 5. Установите:
    - **Expose in SQL Lab:** ✅

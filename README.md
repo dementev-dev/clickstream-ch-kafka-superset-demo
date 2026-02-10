@@ -249,7 +249,7 @@ curl http://localhost:8088/health  # должно вернуть 200
 ```
 
 Что создаётся автоматически:
-- **Подключение к ClickHouse**: `clickhouse_dwh` (URI: `clickhouse+connect://default@clickhouse:8123/default`)
+- **Подключение к ClickHouse**: `clickhouse_dwh` (URI: `clickhousedb://default:123456@clickhouse:8123/default`)
 - **Датасеты** (6 шт.): `v_events_enriched`, `v_daily_traffic`, `v_utm_effectiveness`, `v_top_pages_daily`, `v_session_overview`, `dq_summary`
 - **Чарты** (10 шт.): KPI метрики, графики трафика, география, UTM-эффективность, качество данных
 - **Дашборд**: "🛒 E-commerce Analytics Dashboard"

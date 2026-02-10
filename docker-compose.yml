@@ -273,7 +273,9 @@ services:
         echo 'Initializing roles...' &&
         superset init &&
         echo 'Creating ClickHouse connection and datasets...' &&
-        python /app/superset_init/init_superset.py || true &&
+        python /app/superset_init/init_superset.py &&
+        echo 'Creating dashboard and charts...' &&
+        python /app/superset_init/create_dashboard.py &&
         echo 'Superset initialized successfully'
       "
     depends_on:

@@ -188,7 +188,7 @@
     {
       "__Database__": {
         "database_name": "clickhouse_dwh",
-        "sqlalchemy_uri": "clickhouse+native://default@clickhouse:9000/default",
+        "sqlalchemy_uri": "clickhousedb://default:123456@clickhouse:8123/default",
         "expose_in_sqllab": true,
         "allow_ctas": false,
         "allow_cvas": false,

@@ -602,7 +602,7 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 - URL: `clickhouse://default:123456@clickhouse:9000/default` (native TCP для Airflow plugin)
 - Provider/интеграция: `airflow-clickhouse-plugin` (в `airflow/requirements.txt`), задачи выполняются через `ClickHouseOperator`.
 - Дополнительно: `kafka-python==2.0.6` для работы с Kafka из DAG.
-- Примечание: Superset подключается к ClickHouse по HTTP (обычно `clickhouse+connect://...:8123/...`).
+- Примечание: Superset подключается к ClickHouse по HTTP (обычно `clickhousedb://...:8123/...`).
 
 ---
 
