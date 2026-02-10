@@ -216,7 +216,7 @@ services:
 
   superset:
     # image: apache/superset
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.superset
     restart: unless-stopped
@@ -227,14 +227,60 @@ services:
     volumes:
       - superset_data:/var/lib/superset
       - superset_config:/app/superset_home
+      - ./superset:/app/superset_init:ro
+      - ./configs/superset_config.py:/app/pythonpath/superset_config.py:ro
     environment:
       - SUPERSET_SECRET_KEY=9wc5+erMt60+lxrXDf3RjeIR+zONpEFusO00Np7JzfliMTI1e+RXnHcQ
       - TZ=Europe/Moscow
+      - SUPERSET_CONFIG_PATH=/app/pythonpath/superset_config.py
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+
+  # Superset initialization service
+  superset-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    user: "0:0"
+    networks:
+      - cs_dwh
+    volumes:
+      - superset_data:/var/lib/superset
+      - superset_config:/app/superset_home
+      - ./superset:/app/superset_init:ro
+      - ./configs/superset_config.py:/app/pythonpath/superset_config.py:ro
+    environment:
+      - SUPERSET_SECRET_KEY=9wc5+erMt60+lxrXDf3RjeIR+zONpEFusO00Np7JzfliMTI1e+RXnHcQ
+      - TZ=Europe/Moscow
+      - SUPERSET_CONFIG_PATH=/app/pythonpath/superset_config.py
+    command: >
+      bash -ceuo pipefail "
+        echo 'Waiting for PostgreSQL...' &&
+        sleep 5 &&
+        echo 'Creating superset database if not exists...' &&
+        PGPASSWORD=airflow psql -h postgres-metadata -U airflow -d airflow -tc \"SELECT 1 FROM pg_database WHERE datname='superset'\" | grep -q 1 || \\
+          PGPASSWORD=airflow psql -h postgres-metadata -U airflow -d airflow -c \"CREATE DATABASE superset;\" &&
+        echo 'Initializing Superset DB...' &&
+        superset db upgrade &&
+        echo 'Creating admin user...' &&
+        superset fab create-admin --username admin --password admin --firstname Superset --lastname Admin --email admin@example.org || true &&
+        echo 'Initializing roles...' &&
+        superset init &&
+        echo 'Creating ClickHouse connection and datasets...' &&
+        python /app/superset_init/init_superset.py &&
+        echo 'Creating dashboard and charts...' &&
+        python /app/superset_init/create_dashboard.py &&
+        echo 'Superset initialized successfully'
+      "
+    depends_on:
+      postgres-metadata:
+        condition: service_healthy
 
   # Kafka Exporter для мониторинга через Prometheus
   kafka-exporter:

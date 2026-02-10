@@ -1,0 +1,201 @@
+{
+  "dashboards": [
+    {
+      "__Dashboard__": {
+        "dashboard_title": "🛒 E-commerce Analytics Dashboard",
+        "description": "Аналитический дашборд для e-commerce кликстрима: трафик, конверсии, география и качество данных.",
+        "slug": "ecommerce-analytics",
+        "published": true,
+        "json_metadata": "{\"native_filter_configuration\": [{\"id\": \"date_filter\", \"name\": \"📅 Date Range\", \"filterType\": \"filter_time\", \"targets\": [{\"datasetId\": null, \"column\": {\"name\": \"event_date\"}}], \"defaultValue\": \"Last week\", \"scope\": {\"root\": [\"ROOT_ID\"], \"excluded\": []}, \"cascadeParentIds\": [], \"isInstant\": true}, {\"id\": \"country_filter\", \"name\": \"🌍 Country\", \"filterType\": \"filter_select\", \"targets\": [{\"datasetId\": null, \"column\": {\"name\": \"geo_country\"}}], \"scope\": {\"root\": [\"ROOT_ID\"], \"excluded\": []}, \"isInstant\": true, \"allowsMultipleValues\": true, \"isRequired\": false}, {\"id\": \"device_filter\", \"name\": \"📱 Device Type\", \"filterType\": \"filter_select\", \"targets\": [{\"datasetId\": null, \"column\": {\"name\": \"device_type\"}}], \"scope\": {\"root\": [\"ROOT_ID\"], \"excluded\": []}, \"isInstant\": true, \"allowsMultipleValues\": true, \"isRequired\": false}, {\"id\": \"browser_filter\", \"name\": \"🌐 Browser\", \"filterType\": \"filter_select\", \"targets\": [{\"datasetId\": null, \"column\": {\"name\": \"browser_name\"}}], \"scope\": {\"root\": [\"ROOT_ID\"], \"excluded\": []}, \"isInstant\": true, \"allowsMultipleValues\": true, \"isRequired\": false}], \"color_scheme\": \"supersetColors\", \"label_colors\": {}}",
+        "position_json": "{\"DASHBOARD_VERSION_KEY\": \"v2\", \"CHART-1\": {\"id\": \"CHART-1\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 1, \"sliceName\": \"📊 Total Events\", \"height\": 50, \"width\": 4, \"x\": 0, \"y\": 0}}, \"CHART-2\": {\"id\": \"CHART-2\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 2, \"sliceName\": \"👤 Unique Users\", \"height\": 50, \"width\": 4, \"x\": 4, \"y\": 0}}, \"CHART-3\": {\"id\": \"CHART-3\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 3, \"sliceName\": \"🎯 Unique Sessions\", \"height\": 50, \"width\": 4, \"x\": 8, \"y\": 0}}, \"CHART-4\": {\"id\": \"CHART-4\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 4, \"sliceName\": \"📈 Avg Events/Session\", \"height\": 50, \"width\": 4, \"x\": 0, \"y\": 50}}, \"CHART-5\": {\"id\": \"CHART-5\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 5, \"sliceName\": \"📅 Events by Hour\", \"height\": 50, \"width\": 8, \"x\": 0, \"y\": 100}}, \"CHART-6\": {\"id\": \"CHART-6\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 6, \"sliceName\": \"📱 Traffic by Device\", \"height\": 50, \"width\": 4, \"x\": 8, \"y\": 100}}, \"CHART-7\": {\"id\": \"CHART-7\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 7, \"sliceName\": \"🌍 Geography Map\", \"height\": 50, \"width\": 6, \"x\": 0, \"y\": 150}}, \"CHART-8\": {\"id\": \"CHART-8\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 8, \"sliceName\": \"🔗 UTM Effectiveness Table\", \"height\": 50, \"width\": 6, \"x\": 6, \"y\": 150}}, \"CHART-9\": {\"id\": \"CHART-9\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 9, \"sliceName\": \"📄 Top Pages\", \"height\": 50, \"width\": 6, \"x\": 0, \"y\": 200}}, \"CHART-10\": {\"id\": \"CHART-10\", \"type\": \"CHART\", \"parents\": [\"ROOT_ID\"], \"meta\": {\"chartId\": 10, \"sliceName\": \"🔍 Data Quality Summary\", \"height\": 50, \"width\": 6, \"x\": 6, \"y\": 200}}}",
+        "slices": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+      }
+    }
+  ],
+  "charts": [
+    {
+      "__Slice__": {
+        "slice_name": "📊 Total Events",
+        "viz_type": "big_number",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"big_number\", \"metric\": {\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(*)\", \"column\": null, \"aggregate\": null, \"label\": \"Total Events\", \"optionName\": \"metric_1\"}, \"y_axis_format\": \",d\", \"show_trend_line\": false, \"time_range\": \"No filter\"}",
+        "description": "Общее количество событий"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "👤 Unique Users",
+        "viz_type": "big_number",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"big_number\", \"metric\": {\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(DISTINCT user_domain_id)\", \"label\": \"Unique Users\", \"optionName\": \"metric_2\"}, \"y_axis_format\": \",d\", \"show_trend_line\": false, \"time_range\": \"No filter\"}",
+        "description": "Уникальные пользователи"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "🎯 Unique Sessions",
+        "viz_type": "big_number",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"big_number\", \"metric\": {\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(DISTINCT click_id)\", \"label\": \"Unique Sessions\", \"optionName\": \"metric_3\"}, \"y_axis_format\": \",d\", \"show_trend_line\": false, \"time_range\": \"No filter\"}",
+        "description": "Уникальные сессии"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "📈 Avg Events/Session",
+        "viz_type": "big_number",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"big_number\", \"metric\": {\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(*) / COUNT(DISTINCT click_id)\", \"label\": \"Avg Events/Session\", \"optionName\": \"metric_4\"}, \"y_axis_format\": \".2f\", \"show_trend_line\": false, \"time_range\": \"No filter\"}",
+        "description": "Среднее количество событий на сессию"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "📅 Events by Hour",
+        "viz_type": "echarts_timeseries_line",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"echarts_timeseries_line\", \"granularity_sqla\": \"event_ts\", \"time_grain_sqla\": \"PT1H\", \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(*)\", \"label\": \"Events\"}], \"groupby\": [], \"time_range\": \"Last week\", \"adhoc_filters\": [], \"row_limit\": 10000}",
+        "description": "События по часам"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "📱 Traffic by Device",
+        "viz_type": "pie",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"pie\", \"groupby\": [\"device_type\"], \"metric\": {\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(*)\", \"label\": \"Count\"}, \"row_limit\": 100, \"donut\": true, \"show_legend\": true, \"labels_outside\": true, \"time_range\": \"No filter\"}",
+        "description": "Распределение трафика по устройствам"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "🌍 Geography Map",
+        "viz_type": "world_map",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_events_enriched",
+        "params": "{\"datasource\": \"1__table\", \"viz_type\": \"world_map\", \"entity\": \"geo_country\", \"metric\": {\"expressionType\": \"SQL\", \"sqlExpression\": \"COUNT(*)\", \"label\": \"Events\"}, \"row_limit\": 500, \"linear_color_scheme\": \"blue_white_yellow\", \"time_range\": \"No filter\"}",
+        "description": "География посетителей"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "🔗 UTM Effectiveness Table",
+        "viz_type": "table",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_utm_effectiveness",
+        "params": "{\"datasource\": \"2__table\", \"viz_type\": \"table\", \"groupby\": [\"utm_source\", \"utm_medium\", \"utm_campaign\"], \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(clicks)\", \"label\": \"Clicks\"}, {\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(uniq_users)\", \"label\": \"Users\"}, {\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(uniq_sessions)\", \"label\": \"Sessions\"}], \"row_limit\": 100, \"time_range\": \"No filter\", \"adhoc_filters\": [{\"clause\": \"WHERE\", \"expressionType\": \"SQL\", \"sqlExpression\": \"utm_source IS NOT NULL\", \"subject\": null, \"operator\": null, \"comparator\": null}]}\n",
+        "description": "Эффективность UTM-кампаний"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "📄 Top Pages",
+        "viz_type": "dist_bar",
+        "datasource_type": "table",
+        "datasource_name": "dm.v_top_pages_daily",
+        "params": "{\"datasource\": \"3__table\", \"viz_type\": \"dist_bar\", \"groupby\": [\"page_url_path\"], \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(pageviews)\", \"label\": \"Pageviews\"}], \"row_limit\": 20, \"order_by_cols\": [[\"SUM(pageviews)\", false]], \"time_range\": \"No filter\", \"orientation\": \"vertical\", \"show_legend\": false}",
+        "description": "Топ страниц по просмотрам"
+      }
+    },
+    {
+      "__Slice__": {
+        "slice_name": "🔍 Data Quality Summary",
+        "viz_type": "dist_bar",
+        "datasource_type": "table",
+        "datasource_name": "dm.dq_summary",
+        "params": "{\"datasource\": \"4__table\", \"viz_type\": \"dist_bar\", \"groupby\": [\"layer\"], \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(check_value)\", \"label\": \"Row Count\"}], \"adhoc_filters\": [{\"clause\": \"WHERE\", \"expressionType\": \"SQL\", \"sqlExpression\": \"check_name = 'total_rows'\", \"subject\": null, \"operator\": null, \"comparator\": null}], \"row_limit\": 100, \"time_range\": \"No filter\", \"show_legend\": false}",
+        "description": "Сводка по качеству данных"
+      }
+    }
+  ],
+  "datasets": [
+    {
+      "__SqlaTable__": {
+        "table_name": "v_events_enriched",
+        "schema": "dm",
+        "database": "clickhouse_dwh",
+        "description": "Полная обогащённая витрина событий (event + click)",
+        "columns": [
+          {"column_name": "event_id", "type": "UUID", "description": "UUID события"},
+          {"column_name": "event_ts", "type": "DateTime64(6)", "description": "Время события"},
+          {"column_name": "event_date", "type": "Date", "description": "Дата события"},
+          {"column_name": "event_type", "type": "String", "description": "Тип события"},
+          {"column_name": "click_id", "type": "UUID", "description": "ID сессии"},
+          {"column_name": "user_domain_id", "type": "UUID", "description": "ID пользователя"},
+          {"column_name": "device_type", "type": "String", "description": "Тип устройства"},
+          {"column_name": "geo_country", "type": "String", "description": "Страна"},
+          {"column_name": "browser_name", "type": "String", "description": "Браузер"},
+          {"column_name": "utm_source", "type": "String", "description": "UTM Source"},
+          {"column_name": "utm_medium", "type": "String", "description": "UTM Medium"},
+          {"column_name": "page_url_path", "type": "String", "description": "Путь URL"}
+        ]
+      }
+    },
+    {
+      "__SqlaTable__": {
+        "table_name": "v_utm_effectiveness",
+        "schema": "dm",
+        "database": "clickhouse_dwh",
+        "description": "Эффективность UTM-кампаний",
+        "columns": [
+          {"column_name": "event_date", "type": "Date", "description": "Дата"},
+          {"column_name": "utm_source", "type": "String", "description": "UTM Source"},
+          {"column_name": "utm_medium", "type": "String", "description": "UTM Medium"},
+          {"column_name": "utm_campaign", "type": "String", "description": "UTM Campaign"},
+          {"column_name": "clicks", "type": "UInt64", "description": "Клики"},
+          {"column_name": "uniq_users", "type": "UInt64", "description": "Уникальные пользователи"},
+          {"column_name": "uniq_sessions", "type": "UInt64", "description": "Уникальные сессии"}
+        ]
+      }
+    },
+    {
+      "__SqlaTable__": {
+        "table_name": "v_top_pages_daily",
+        "schema": "dm",
+        "database": "clickhouse_dwh",
+        "description": "Популярность страниц по дням",
+        "columns": [
+          {"column_name": "event_date", "type": "Date", "description": "Дата"},
+          {"column_name": "page_url_path", "type": "String", "description": "Путь URL"},
+          {"column_name": "pageviews", "type": "UInt64", "description": "Просмотры"},
+          {"column_name": "uniq_clicks", "type": "UInt64", "description": "Уникальные клики"}
+        ]
+      }
+    },
+    {
+      "__SqlaTable__": {
+        "table_name": "dq_summary",
+        "schema": "dm",
+        "database": "clickhouse_dwh",
+        "description": "Сводка по качеству данных",
+        "columns": [
+          {"column_name": "check_date", "type": "Date", "description": "Дата проверки"},
+          {"column_name": "layer", "type": "String", "description": "Слой (stg/ods/dds)"},
+          {"column_name": "table_name", "type": "String", "description": "Имя таблицы"},
+          {"column_name": "check_name", "type": "String", "description": "Тип проверки"},
+          {"column_name": "check_value", "type": "UInt64", "description": "Значение"}
+        ]
+      }
+    }
+  ],
+  "databases": [
+    {
+      "__Database__": {
+        "database_name": "clickhouse_dwh",
+        "sqlalchemy_uri": "clickhousedb://default:123456@clickhouse:8123/default",
+        "expose_in_sqllab": true,
+        "allow_ctas": false,
+        "allow_cvas": false,
+        "allow_dml": false,
+        "allow_file_upload": false,
+        "extra": "{}"
+      }
+    }
+  ]
+}

@@ -1,6 +1,12 @@
-.PHONY: up down clean ddl data transform reload-monitoring recover-monitoring
+.PHONY: up down clean ddl data transform logs \
+        reload-monitoring recover-monitoring \
+        superset-init superset-dashboard superset-export superset-ui superset-restart
 
 COMPOSE ?= docker compose
+
+# ============================================================================
+# Основные команды
+# ============================================================================
 
 up:
 	$(COMPOSE) up -d
@@ -12,6 +18,13 @@ down:
 # Полная очистка окружения проекта (включая volumes)
 clean:
 	$(COMPOSE) down -v --remove-orphans
+
+logs:
+	$(COMPOSE) logs -f --tail=200 $(service)
+
+# ============================================================================
+# ETL Pipeline
+# ============================================================================
 
 ddl:
 	bash ./scripts/apply_clickhouse_ddl.sh
@@ -49,3 +62,28 @@ recover-monitoring:
 	@echo "=== Проверка targets ==="
 	@curl -s http://localhost:9090/api/v1/targets | grep -o '"job":"[^"]*"' | sort | uniq
 	@curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"' | sort | uniq -c
+
+# ============================================================================
+# Superset команды
+# ============================================================================
+
+# Инициализация Superset (подключение к ClickHouse + датасеты)
+superset-init:
+	$(COMPOSE) exec -T superset bash -c "python /app/superset_init/init_superset.py"
+
+# Создание дашборда с чартами
+superset-dashboard:
+	$(COMPOSE) exec -T superset bash -c "python /app/superset_init/create_dashboard.py"
+
+# Экспорт дашборда в JSON
+superset-export:
+	$(COMPOSE) exec -T superset bash -c "python /app/superset_init/export_dashboard.py"
+
+# Открыть Superset UI
+superset-ui:
+	@echo "Superset доступен по адресу: http://localhost:8088"
+	@echo "Логин: admin / Пароль: admin"
+
+# Перезапуск Superset
+superset-restart:
+	$(COMPOSE) restart superset
