@@ -13,9 +13,10 @@
 
 Важно:
     Superset использует SQLite по умолчанию (не PostgreSQL).
-    Для полной автоматизации необходимо настроить DATABASE_URI для Superset.
     
-    Текущий подход: используем Superset CLI для создания подключения.
+    Текущий подход: 
+    1. CLI для создания подключения к БД
+    2. Superset shell для импорта датасетов (требуется app context)
 
 Требования:
     - Запущенный ClickHouse с созданными витринами в схеме dm
@@ -57,40 +58,29 @@ def create_clickhouse_connection():
     """Создание подключения к ClickHouse через CLI"""
     logger.info("Creating ClickHouse database connection...")
     
-    # Проверяем, существует ли уже подключение
-    success, stdout, stderr = run_superset_cli(['databases', 'list'])
+    # Создаем подключение через set-database-uri
+    # clickhouse-connect использует HTTP порт 8123 внутри Docker сети
+    success, stdout, stderr = run_superset_cli([
+        'set-database-uri',
+        '-d', 'clickhouse_dwh',
+        '-u', 'clickhouse+connect://default@clickhouse:8123/default'
+    ])
     
-    if not success:
-        logger.warning(f"Could not list databases: {stderr}")
-    elif 'clickhouse_dwh' in stdout:
-        logger.info("Database connection 'clickhouse_dwh' already exists")
+    if success:
+        logger.info("Successfully created ClickHouse database connection 'clickhouse_dwh'")
         return True
-    
-    # Используем SQL Lab для создания подключения
-    # Это обходной путь, так как Superset CLI не имеет прямой команды для создания БД
-    logger.info("Database connection needs to be created manually via UI")
-    logger.info("Go to: Settings → Database Connections → + Database")
-    logger.info("Select: ClickHouse")
-    logger.info("URI: clickhouse+native://default@clickhouse:9000/default")
-    
-    return True
+    else:
+        logger.error(f"Failed to create database connection: {stderr}")
+        logger.info("Please create manually via UI:")
+        logger.info("1. Go to: Settings → Database Connections → + Database")
+        logger.info("2. Select: ClickHouse")
+        logger.info("3. URI: clickhouse+connect://default@clickhouse:8123/default")
+        return False
 
 
 def import_datasets():
-    """Импорт датасетов через Superset Python API"""
+    """Импорт датасетов через Superset shell"""
     logger.info("Importing datasets...")
-    
-    try:
-        from superset.app import create_app
-        from superset.extensions import db
-        from superset.models.core import Database
-        from superset.connectors.sqla.models import SqlaTable
-        
-        app = create_app()
-    except Exception as e:
-        logger.error(f"Failed to import Superset modules: {e}")
-        logger.info("Please ensure Superset is properly initialized")
-        return False
     
     datasets = [
         {
@@ -131,64 +121,72 @@ def import_datasets():
         }
     ]
     
-    with app.app_context():
-        # Получаем ID базы данных
-        database = db.session.query(Database).filter_by(
-            database_name="clickhouse_dwh"
-        ).first()
-        
-        if not database:
-            logger.error("ClickHouse database connection not found!")
-            logger.info("Please create database connection manually first:")
-            logger.info("1. Go to http://localhost:8088")
-            logger.info("2. Login: admin / admin")
-            logger.info("3. Settings → Database Connections → + Database")
-            logger.info("4. Select ClickHouse")
-            logger.info("5. URI: clickhouse+native://default@clickhouse:9000/default")
-            return False
-        
-        imported_count = 0
-        for dataset_config in datasets:
-            try:
-                # Проверяем, существует ли датасет
-                existing = db.session.query(SqlaTable).filter_by(
-                    table_name=dataset_config["table_name"],
-                    schema=dataset_config["schema"]
-                ).first()
-                
-                if existing:
-                    logger.info(f"Dataset '{dataset_config['table_name']}' already exists")
-                    continue
-                
-                # Создаём датасет
-                dataset = SqlaTable(
-                    table_name=dataset_config["table_name"],
-                    schema=dataset_config["schema"],
-                    database_id=database.id,
-                    database=database,
-                    description=dataset_config["description"],
-                    is_sqllab_view=False
-                )
-                
-                db.session.add(dataset)
-                db.session.flush()
-                
-                # Fetch columns from database
-                try:
-                    dataset.fetch_metadata()
-                except Exception as e:
-                    logger.warning(f"Could not fetch metadata for {dataset_config['table_name']}: {e}")
-                
-                db.session.commit()
-                logger.info(f"Successfully imported dataset: {dataset_config['table_name']}")
-                imported_count += 1
-                
-            except Exception as e:
-                db.session.rollback()
-                logger.error(f"Failed to import dataset '{dataset_config['table_name']}': {e}")
-        
-        logger.info(f"Imported {imported_count} new datasets")
-        return True
+    # Создаем Python скрипт для выполнения внутри superset shell
+    script_lines = [
+        "from superset.extensions import db",
+        "from superset.models.core import Database",
+        "from superset.connectors.sqla.models import SqlaTable",
+        "",
+        "# Получаем базу данных",
+        "database = db.session.query(Database).filter_by(database_name='clickhouse_dwh').first()",
+        "if not database:",
+        "    print('ERROR: Database clickhouse_dwh not found')",
+        "    exit(1)",
+        "",
+        "print(f'Found database: {database.database_name} (id={database.id})')",
+        "",
+        "imported = 0",
+    ]
+    
+    for ds in datasets:
+        script_lines.extend([
+            "",
+            f"# Dataset: {ds['table_name']}",
+            f"existing = db.session.query(SqlaTable).filter_by(table_name='{ds['table_name']}', schema='{ds['schema']}').first()",
+            "if existing:",
+            f"    print(f'Dataset {ds['table_name']} already exists')",
+            "else:",
+            "    try:",
+            f"        dataset = SqlaTable(table_name='{ds['table_name']}', schema='{ds['schema']}', database_id=database.id, database=database, description='{ds['description']}')",
+            "        db.session.add(dataset)",
+            "        db.session.flush()",
+            f"        print(f'Created dataset: {ds['table_name']}')",
+            "        imported += 1",
+            "    except Exception as e:",
+            f"        print(f'Error creating {ds['table_name']}: {{e}}')",
+            "        db.session.rollback()",
+        ])
+    
+    script_lines.extend([
+        "",
+        "db.session.commit()",
+        "print(f'Successfully imported {imported} datasets')",
+    ])
+    
+    script_content = '\n'.join(script_lines)
+    
+    # Запускаем через superset shell
+    cmd = ['superset', 'shell']
+    logger.info("Running datasets import via superset shell...")
+    
+    result = subprocess.run(
+        cmd,
+        input=script_content,
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        logger.error(f"Shell command failed: {result.stderr}")
+        return False
+    
+    logger.info(f"Shell output:\n{result.stdout}")
+    if "ERROR" in result.stdout:
+        logger.error("Failed to import some datasets")
+        return False
+    
+    logger.info("Datasets imported successfully")
+    return True
 
 
 def main():
@@ -197,9 +195,9 @@ def main():
     logger.info("Superset Initialization for ClickHouse Mini DWH")
     logger.info("=" * 60)
     
-    # Проверяем подключение к ClickHouse
+    # Создаем подключение к ClickHouse
     if not create_clickhouse_connection():
-        logger.error("Failed to verify ClickHouse connection")
+        logger.error("Failed to create ClickHouse connection")
         sys.exit(1)
     
     # Импортируем датасеты

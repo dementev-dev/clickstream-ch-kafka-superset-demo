@@ -5,8 +5,7 @@
 ================================================================================
 Назначение:
     - Создание чартов (Charts) на основе датасетов DM-слоя
-    - Создание дашборда с layout и фильтрами
-    - Настройка native filters
+    - Создание дашборда с layout
 
 Запуск:
     Внутри контейнера superset:
@@ -275,167 +274,154 @@ DASHBOARD_CONFIG = {
 }
 
 
-def get_dataset_by_name(app, dataset_name: str):
-    """Получение датасета по имени таблицы"""
-    from superset.connectors.sqla.models import SqlaTable
-    
-    with app.app_context():
-        dataset = db.session.query(SqlaTable).filter_by(
-            table_name=dataset_name,
-            schema="dm"
-        ).first()
-        return dataset
-
-
-def create_chart(app, chart_config: dict, dataset):
-    """Создание чарта"""
-    from superset.extensions import db
-    from superset.utils.core import DatasourceType
-    from superset.charts.commands.create import CreateChartCommand
-    
-    with app.app_context():
-        try:
-            # Подготавливаем параметры
-            params = chart_config["params"].copy()
-            params["datasource"] = f"{dataset.id}__{DatasourceType.TABLE.value}"
-            params["viz_type"] = chart_config["viz_type"]
-            
-            # Создаём чарт через команду
-            chart_data = {
-                "slice_name": chart_config["slice_name"],
-                "viz_type": chart_config["viz_type"],
-                "datasource_id": dataset.id,
-                "datasource_type": DatasourceType.TABLE.value,
-                "params": json.dumps(params),
-                "description": f"Chart created automatically for {chart_config['dataset_name']}"
-            }
-            
-            result = CreateChartCommand(chart_data).run()
-            logger.info(f"Created chart: {chart_config['slice_name']} (ID: {result.id})")
-            return {"id": result.id, "title": result.slice_name}
-            
-        except Exception as e:
-            logger.error(f"Failed to create chart '{chart_config['slice_name']}': {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-
-def create_dashboard(app, charts: list):
-    """Создание дашборда с чартами"""
-    from superset.extensions import db
-    from superset.dashboards.commands.create import CreateDashboardCommand
-    from superset.dashboards.dao import DashboardDAO
-    from superset.charts.dao import ChartDAO
-    
-    with app.app_context():
-        try:
-            # Проверяем, существует ли дашборд
-            existing = DashboardDAO.get_by_slug(DASHBOARD_CONFIG["slug"])
-            
-            if existing:
-                logger.info(f"Dashboard '{DASHBOARD_CONFIG['dashboard_title']}' already exists")
-                return existing
-            
-            # Создаём позиции чартов для layout
-            positions = {
-                "DASHBOARD_VERSION_KEY": "v2"
-            }
-            
-            # Добавляем чарты в layout (grid: 12 columns)
-            y_position = 0
-            chart_index = 0
-            
-            for chart in charts:
-                if chart:
-                    positions[f"CHART-{chart['id']}"] = {
-                        "id": f"CHART-{chart['id']}",
-                        "type": "CHART",
-                        "parents": ["ROOT_ID"],
-                        "meta": {
-                            "chartId": chart['id'],
-                            "sliceName": chart['title'],
-                            "height": 50,
-                            "width": 4 if chart_index < 4 else 6,
-                            "x": (chart_index % 3) * 4 if chart_index < 4 else (chart_index % 2) * 6,
-                            "y": y_position
-                        }
-                    }
-                    chart_index += 1
-                    if chart_index % 4 == 0:
-                        y_position += 50
-            
-            # Создаём дашборд
-            dashboard_data = {
-                "dashboard_title": DASHBOARD_CONFIG["dashboard_title"],
-                "slug": DASHBOARD_CONFIG["slug"],
-                "description": DASHBOARD_CONFIG["description"],
-                "published": DASHBOARD_CONFIG["published"],
-                "json_metadata": DASHBOARD_CONFIG["json_metadata"],
-                "position_json": json.dumps(positions)
-            }
-            
-            result = CreateDashboardCommand(dashboard_data).run()
-            
-            # Добавляем чарты к дашборду
-            dashboard = DashboardDAO.get_by_id(result.id)
-            
-            for chart_info in charts:
-                if chart_info:
-                    chart = ChartDAO.find_by_id(chart_info["id"])
-                    if chart:
-                        dashboard.slices.append(chart)
-            
-            db.session.commit()
-            
-            logger.info(f"Created dashboard: {DASHBOARD_CONFIG['dashboard_title']} (ID: {result.id})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Failed to create dashboard: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-
 def main():
     """Главная функция"""
     logger.info("=" * 60)
     logger.info("Creating E-commerce Analytics Dashboard")
     logger.info("=" * 60)
     
+    # Импорты внутри main после создания app context
     from superset.app import create_app
-    from superset.extensions import db
     
     app = create_app()
     
-    created_charts = []
-    
-    # Создаём чарты
-    for chart_config in CHARTS_CONFIG:
-        dataset = get_dataset_by_name(app, chart_config["dataset_name"])
-        if not dataset:
-            logger.warning(f"Dataset '{chart_config['dataset_name']}' not found, skipping chart")
-            continue
+    with app.app_context():
+        from superset.extensions import db
+        from superset.models.slice import Slice
+        from superset.models.dashboard import Dashboard
+        from superset.connectors.sqla.models import SqlaTable
         
-        chart = create_chart(app, chart_config, dataset)
-        if chart:
-            created_charts.append(chart)
-    
-    logger.info(f"Created {len(created_charts)} charts")
-    
-    # Создаём дашборд
-    if created_charts:
-        dashboard = create_dashboard(app, created_charts)
-        if dashboard:
-            logger.info("=" * 60)
-            logger.info("Dashboard created successfully!")
-            logger.info(f"Dashboard URL: /superset/dashboard/{dashboard.id}/")
-            logger.info("=" * 60)
+        created_charts = []
+        
+        # Создаём чарты
+        for chart_config in CHARTS_CONFIG:
+            dataset = db.session.query(SqlaTable).filter_by(
+                table_name=chart_config["dataset_name"],
+                schema="dm"
+            ).first()
+            
+            if not dataset:
+                logger.warning(f"Dataset '{chart_config['dataset_name']}' not found, skipping chart")
+                continue
+            
+            try:
+                # Проверяем, существует ли уже чарт
+                existing = db.session.query(Slice).filter_by(
+                    slice_name=chart_config["slice_name"]
+                ).first()
+                
+                if existing:
+                    logger.info(f"Chart '{chart_config['slice_name']}' already exists (ID: {existing.id})")
+                    created_charts.append({"id": existing.id, "title": existing.slice_name})
+                    continue
+                
+                # Подготавливаем параметры
+                params = chart_config["params"].copy()
+                params["datasource"] = f"{dataset.id}__table"
+                params["viz_type"] = chart_config["viz_type"]
+                
+                # Создаём чарт
+                chart = Slice(
+                    slice_name=chart_config["slice_name"],
+                    viz_type=chart_config["viz_type"],
+                    datasource_id=dataset.id,
+                    datasource_type="table",
+                    datasource_name=dataset.table_name,
+                    params=json.dumps(params),
+                    description=f"Chart created automatically for {chart_config['dataset_name']}"
+                )
+                
+                db.session.add(chart)
+                db.session.flush()
+                
+                logger.info(f"Created chart: {chart_config['slice_name']} (ID: {chart.id})")
+                created_charts.append({"id": chart.id, "title": chart.slice_name})
+                
+            except Exception as e:
+                logger.error(f"Failed to create chart '{chart_config['slice_name']}': {e}")
+                import traceback
+                traceback.print_exc()
+                db.session.rollback()
+        
+        logger.info(f"Created/Found {len(created_charts)} charts")
+        
+        # Создаём дашборд
+        if created_charts:
+            try:
+                # Проверяем, существует ли дашборд
+                existing = db.session.query(Dashboard).filter_by(
+                    slug=DASHBOARD_CONFIG["slug"]
+                ).first()
+                
+                if existing:
+                    logger.info(f"Dashboard '{DASHBOARD_CONFIG['dashboard_title']}' already exists (ID: {existing.id})")
+                    logger.info("=" * 60)
+                    logger.info("Dashboard already exists!")
+                    logger.info(f"Dashboard URL: /superset/dashboard/{existing.id}/")
+                    logger.info("=" * 60)
+                    return
+                
+                # Создаём позиции чартов для layout
+                positions = {"DASHBOARD_VERSION_KEY": "v2"}
+                
+                # Добавляем чарты в layout (grid: 12 columns)
+                y_position = 0
+                chart_index = 0
+                
+                for chart in created_charts:
+                    if chart:
+                        positions[f"CHART-{chart['id']}"] = {
+                            "id": f"CHART-{chart['id']}",
+                            "type": "CHART",
+                            "parents": ["ROOT_ID"],
+                            "meta": {
+                                "chartId": chart['id'],
+                                "sliceName": chart['title'],
+                                "height": 50,
+                                "width": 4 if chart_index < 4 else 6,
+                                "x": (chart_index % 3) * 4 if chart_index < 4 else (chart_index % 2) * 6,
+                                "y": y_position
+                            }
+                        }
+                        chart_index += 1
+                        if chart_index % 4 == 0:
+                            y_position += 50
+                
+                # Создаём дашборд
+                dashboard = Dashboard(
+                    dashboard_title=DASHBOARD_CONFIG["dashboard_title"],
+                    slug=DASHBOARD_CONFIG["slug"],
+                    description=DASHBOARD_CONFIG["description"],
+                    published=DASHBOARD_CONFIG["published"],
+                    json_metadata=DASHBOARD_CONFIG["json_metadata"],
+                    position_json=json.dumps(positions)
+                )
+                
+                db.session.add(dashboard)
+                db.session.flush()
+                
+                # Добавляем чарты к дашборду
+                for chart_info in created_charts:
+                    if chart_info:
+                        chart = db.session.query(Slice).filter_by(id=chart_info["id"]).first()
+                        if chart:
+                            dashboard.slices.append(chart)
+                
+                db.session.commit()
+                
+                logger.info(f"Created dashboard: {DASHBOARD_CONFIG['dashboard_title']} (ID: {dashboard.id})")
+                logger.info("=" * 60)
+                logger.info("Dashboard created successfully!")
+                logger.info(f"Dashboard URL: /superset/dashboard/{dashboard.id}/")
+                logger.info("=" * 60)
+                
+            except Exception as e:
+                logger.error(f"Failed to create dashboard: {e}")
+                import traceback
+                traceback.print_exc()
+                db.session.rollback()
         else:
-            logger.error("Failed to create dashboard")
-    else:
-        logger.error("No charts created, cannot create dashboard")
+            logger.error("No charts created, cannot create dashboard")
 
 
 if __name__ == "__main__":

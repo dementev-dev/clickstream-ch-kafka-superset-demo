@@ -66,14 +66,16 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 
 ## Доступные сервисы
 
-| Сервис | URL | Назначение |
-|--------|-----|------------|
-| ClickHouse HTTP | http://localhost:9123/play | SQL-запросы |
-| Kafka UI | http://localhost:8082 | Просмотр топиков |
-| Airflow | http://localhost:8080 | Оркестрация ETL (admin/admin) |
-| Superset | http://localhost:8088 | BI-дашборды |
-| Prometheus | http://localhost:9090 | Метрики |
-| Grafana | http://localhost:3000 | Визуализация метрик |
+| Сервис | URL | Назначение | Логин/Пароль |
+|--------|-----|------------|--------------|
+| ClickHouse HTTP | http://localhost:9123/play | SQL-запросы | default/123456 |
+| Kafka UI | http://localhost:8082 | Просмотр топиков | — |
+| Airflow | http://localhost:8080 | Оркестрация ETL | admin/admin |
+| Superset | http://localhost:8088 | BI-дашборды | admin/admin |
+| Prometheus | http://localhost:9090 | Метрики | — |
+| Grafana | http://localhost:3000 | Визуализация метрик | admin/admin |
+
+Superset: после `make up` готовый дашборд доступен по адресу http://localhost:8088/superset/dashboard/1/
 
 ---
 
@@ -149,15 +151,22 @@ flowchart LR
 │   ├── ods/          # Batch SQL: STG -> ODS
 │   ├── dds/          # Batch SQL: ODS -> DDS
 │   └── dm/           # Batch SQL: DDS -> DM
+├── configs/          # Конфигурации сервисов
+│   ├── superset_config.py      # Конфиг Superset (PostgreSQL metadata)
+│   ├── prometheus/             # Prometheus конфигурация
+│   └── grafana/                # Grafana dashboards & datasources
 ├── scripts/          # Служебные shell-скрипты (legacy fallback, не основной путь)
 ├── airflow/          # Конфигурация Airflow
 │   ├── dags/         # Airflow DAGs для оркестрации
 │   └── requirements.txt
+├── superset/         # Скрипты инициализации Superset
+│   ├── init_superset.py        # Подключение к ClickHouse + датасеты
+│   └── create_dashboard.py     # Создание дашборда с чартами
 ├── docs/             # Документация
 │   └── ARCHITECTURE.md   # Подробное описание слоёв
 ├── data/             # Исходные JSONL файлы
 ├── docker-compose.yml
-└── Makefile          # Команды: up, ddl, transform
+└── Makefile          # Команды: up, ddl, transform, superset-*
 ```
 
 ---
@@ -169,6 +178,10 @@ flowchart LR
 | `make up` | Поднять инфраструктуру |
 | `make ddl` | Применить DDL в ClickHouse (вне Airflow) |
 | `make transform` | Запустить batch-процесс `STG -> ODS -> DDS -> DM` (вне Airflow) |
+| `make superset-init` | Подключение к ClickHouse + импорт датасетов |
+| `make superset-dashboard` | Создание дашборда с чартами |
+| `make superset-ui` | Показать URL Superset |
+| `make superset-restart` | Перезапуск Superset |
 
 Примечания про сохранность данных:
 - Данные ClickHouse сохраняются в Docker volume `clickhouse-data`.
@@ -215,16 +228,69 @@ flowchart LR
 
 ## Дашборд в Superset (опционально, но полезно)
 
-1. Открыть `http://localhost:8088`
-2. Database -> Add:
-   - URI: `clickhouse+connect://default:123456@clickhouse:8123/default`
-3. Создать datasets из `dm.v_*` (VIEW) и собрать несколько графиков
+Superset развёрнут с автоматической инициализацией: подключение к ClickHouse, датасеты и дашборд создаются автоматически при первом запуске.
 
-Идеи графиков под задание:
-- Трафик по дням: `dm.v_daily_traffic` (events, uniq_users)
-- Эффективность UTM: `dm.v_utm_effectiveness` (clicks, purchases)
-- Популярные страницы: `dm.v_top_pages_daily` (pageviews)
-- Качество данных: `dm.v_dq_errors_daily` (rows_cnt по error_code)
+### Быстрый доступ
+
+| URL | Назначение | Логин/Пароль |
+|-----|------------|--------------|
+| http://localhost:8088 | Superset UI | admin/admin |
+| http://localhost:8088/superset/dashboard/1/ | Готовый дашборд | — |
+
+### Автоматическая инициализация (рекомендуется)
+
+```bash
+# При первом запуске инфраструктуры
+make up
+
+# Дашборд создаётся автоматически через 30-60 секунд
+# Проверить готовность:
+curl http://localhost:8088/health  # должно вернуть 200
+```
+
+Что создаётся автоматически:
+- **Подключение к ClickHouse**: `clickhouse_dwh` (URI: `clickhouse+connect://default@clickhouse:8123/default`)
+- **Датасеты** (6 шт.): `v_events_enriched`, `v_daily_traffic`, `v_utm_effectiveness`, `v_top_pages_daily`, `v_session_overview`, `dq_summary`
+- **Чарты** (10 шт.): KPI метрики, графики трафика, география, UTM-эффективность, качество данных
+- **Дашборд**: "🛒 E-commerce Analytics Dashboard"
+
+### Ручная инициализация (если автоматика не сработала)
+
+```bash
+# Подключение к ClickHouse + датасеты
+make superset-init
+
+# Создание дашборда с чартами
+make superset-dashboard
+```
+
+### Структура дашборда
+
+Дашборд "E-commerce Analytics Dashboard" включает:
+
+| Блок | Чарты | Датасет |
+|------|-------|---------|
+| **KPI** | Total Events, Unique Users, Unique Sessions, Avg Events/Session | `v_events_enriched` |
+| **Динамика** | Events by Hour (timeline), Traffic by Device (pie) | `v_events_enriched` |
+| **География** | World Map по странам | `v_events_enriched` |
+| **Маркетинг** | UTM Effectiveness Table, Top Pages | `v_utm_effectiveness`, `v_top_pages_daily` |
+| **Quality** | Data Quality Summary | `dq_summary` |
+
+### Архитектура Superset
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Superset UI   │────▶│   PostgreSQL     │────▶│   ClickHouse    │
+│   (localhost)   │     │   (metadata)     │     │   (данные)      │
+│     :8088       │     │  dashboards,     │     │  dm.v_* VIEW    │
+└─────────────────┘     │  datasets, charts│     └─────────────────┘
+                        └──────────────────┘
+```
+
+Особенности конфигурации:
+- **Metadata**: PostgreSQL (shared с Airflow) — данные сохраняются при перезапуске
+- **Data**: ClickHouse через `clickhouse-connect` (HTTP порт 8123)
+- **Config**: `configs/superset_config.py` (PostgreSQL URI, секретный ключ)
 
 ---
 
@@ -257,6 +323,8 @@ flowchart LR
 - Подключения используют разные протоколы:
   - Airflow (ClickHouseOperator) ходит в ClickHouse по native TCP (порт `9000` внутри сети Docker).
   - Superset (clickhouse-connect) ходит по HTTP (порт `8123` внутри сети Docker).
+- **Superset**: дашборд не появился сразу — подождите 30-60 секунд после `make up`, затем проверьте `curl http://localhost:8088/health`.
+- **Superset**: при полном сбросе (`docker compose down -v`) метаданные Superset пропадут т.к. используется общая PostgreSQL. Для чистого перезапуска Superset удалите только БД `superset` в PostgreSQL и перезапустите контейнеры.
 
 ---
 
@@ -267,6 +335,7 @@ flowchart LR
 - **Ingest**: DAG `ddl_init` (DDL + проверка схемы), DAG `kafka_load` (параметры `limit`, `reset_topics`)
 - **Трансформации**: DAG `etl_pipeline` (pre-check, batch STG→ODS→DDS→DM, валидация)
 - **Витрины**: VIEW в DM для бизнес-дашбордов (трафик, UTM, качество данных)
+- **Superset**: Автоматическая инициализация (подключение ClickHouse, 6 датасетов, 10 чартов, дашборд), метаданные в PostgreSQL
 - **Надёжность**: ошибки парсинга сохраняются в ODS, пайплайн не падает на "грязных" данных
 - **Мониторинг**: Prometheus скрейпит ClickHouse метрики, Grafana дашборд и alert rules
 
