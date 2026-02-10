@@ -96,20 +96,20 @@
     {
       "__Slice__": {
         "slice_name": "📄 Top Pages",
-        "viz_type": "echarts_bar",
+        "viz_type": "dist_bar",
         "datasource_type": "table",
         "datasource_name": "dm.v_top_pages_daily",
-        "params": "{\"datasource\": \"3__table\", \"viz_type\": \"echarts_bar\", \"x_axis\": \"page_url_path\", \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(pageviews)\", \"label\": \"Pageviews\"}], \"row_limit\": 20, \"order_by_cols\": [[\"SUM(pageviews)\", false]], \"time_range\": \"No filter\", \"orientation\": \"vertical\", \"show_legend\": false}",
+        "params": "{\"datasource\": \"3__table\", \"viz_type\": \"dist_bar\", \"groupby\": [\"page_url_path\"], \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(pageviews)\", \"label\": \"Pageviews\"}], \"row_limit\": 20, \"order_by_cols\": [[\"SUM(pageviews)\", false]], \"time_range\": \"No filter\", \"orientation\": \"vertical\", \"show_legend\": false}",
         "description": "Топ страниц по просмотрам"
       }
     },
     {
       "__Slice__": {
         "slice_name": "🔍 Data Quality Summary",
-        "viz_type": "echarts_bar",
+        "viz_type": "dist_bar",
         "datasource_type": "table",
         "datasource_name": "dm.dq_summary",
-        "params": "{\"datasource\": \"4__table\", \"viz_type\": \"echarts_bar\", \"x_axis\": \"layer\", \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(check_value)\", \"label\": \"Row Count\"}], \"adhoc_filters\": [{\"clause\": \"WHERE\", \"expressionType\": \"SQL\", \"sqlExpression\": \"check_name = 'total_rows'\", \"subject\": null, \"operator\": null, \"comparator\": null}], \"row_limit\": 100, \"time_range\": \"No filter\", \"show_legend\": false}",
+        "params": "{\"datasource\": \"4__table\", \"viz_type\": \"dist_bar\", \"groupby\": [\"layer\"], \"metrics\": [{\"expressionType\": \"SQL\", \"sqlExpression\": \"SUM(check_value)\", \"label\": \"Row Count\"}], \"adhoc_filters\": [{\"clause\": \"WHERE\", \"expressionType\": \"SQL\", \"sqlExpression\": \"check_name = 'total_rows'\", \"subject\": null, \"operator\": null, \"comparator\": null}], \"row_limit\": 100, \"time_range\": \"No filter\", \"show_legend\": false}",
         "description": "Сводка по качеству данных"
       }
     }
