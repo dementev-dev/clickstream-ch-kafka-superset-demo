@@ -29,6 +29,7 @@ import os
 import logging
 import subprocess
 from urllib.parse import quote_plus
+from sqlalchemy.exc import NoSuchTableError
 
 # Настройка логирования
 logging.basicConfig(
@@ -45,6 +46,27 @@ CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '123456')
 CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'clickhouse')
 CLICKHOUSE_PORT = os.getenv('CLICKHOUSE_HTTP_PORT', '8123')
 CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'default')
+
+
+def is_expected_missing_table_error(exc: Exception, schema_name: str, table_name: str) -> bool:
+    """Проверяет, что ошибка связана с отсутствием таблицы/вьюхи в ClickHouse."""
+    if isinstance(exc, NoSuchTableError):
+        return True
+
+    text = str(exc).strip().lower()
+    full_table_name = f"{schema_name}.{table_name}".lower()
+    known_markers = (
+        "doesn't exist",
+        "does not exist",
+        "unknown table",
+        "no such table",
+        "code: 60",
+    )
+
+    if text == full_table_name:
+        return True
+
+    return full_table_name in text and any(marker in text for marker in known_markers)
 
 
 def build_clickhouse_uri() -> str:
@@ -143,6 +165,17 @@ def import_datasets():
         "from superset.extensions import db",
         "from superset.models.core import Database",
         "from superset.connectors.sqla.models import SqlaTable",
+        "from sqlalchemy.exc import NoSuchTableError",
+        "",
+        "def is_expected_missing_table_error(exc, schema_name, table_name):",
+        "    text = str(exc).strip().lower()",
+        "    full_table_name = f'{schema_name}.{table_name}'.lower()",
+        "    known_markers = ('doesn\\'t exist', 'does not exist', 'unknown table', 'no such table', 'code: 60')",
+        "    if isinstance(exc, NoSuchTableError):",
+        "        return True",
+        "    if text == full_table_name:",
+        "        return True",
+        "    return full_table_name in text and any(marker in text for marker in known_markers)",
         "",
         "# Получаем базу данных",
         "database = db.session.query(Database).filter_by(database_name='clickhouse_dwh').first()",
@@ -179,9 +212,13 @@ def import_datasets():
             "        else:",
             f"            print('Dataset {table_name} already exists')",
             "    except Exception as e:",
-            f"        print(f'ERROR: failed to refresh {table_name}: {{e}}')",
-            "        db.session.rollback()",
-            "        errors += 1",
+            f"        if is_expected_missing_table_error(e, {schema_name!r}, {table_name!r}):",
+            f"            print('WARNING: metadata not refreshed for {table_name}: source table/view not found yet')",
+            "            db.session.rollback()",
+            "        else:",
+            f"            print(f'ERROR: failed to refresh {table_name}: {{e}}')",
+            "            db.session.rollback()",
+            "            errors += 1",
             "else:",
             "    try:",
             (
@@ -200,9 +237,14 @@ def import_datasets():
             f"        print('Created dataset: {table_name}')",
             "        imported += 1",
             "    except Exception as e:",
-            f"        print(f'ERROR: failed to create {table_name}: {{e}}')",
-            "        db.session.rollback()",
-            "        errors += 1",
+            f"        if is_expected_missing_table_error(e, {schema_name!r}, {table_name!r}):",
+            "            db.session.commit()",
+            f"            print('WARNING: created dataset {table_name} without metadata: source table/view not found yet')",
+            "            imported += 1",
+            "        else:",
+            f"            print(f'ERROR: failed to create {table_name}: {{e}}')",
+            "            db.session.rollback()",
+            "            errors += 1",
         ])
     
     script_lines.extend([

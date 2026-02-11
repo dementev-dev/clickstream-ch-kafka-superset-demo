@@ -69,7 +69,9 @@ recover-monitoring:
 
 # Инициализация Superset (подключение к ClickHouse + датасеты)
 superset-init:
-	$(COMPOSE) exec -T superset bash -c "python /app/superset_init/init_superset.py"
+	$(COMPOSE) up -d postgres-metadata clickhouse
+	$(COMPOSE) up --abort-on-container-exit --exit-code-from superset-init superset-init
+	$(COMPOSE) up -d --no-deps superset
 
 # Создание дашборда с чартами
 superset-dashboard:

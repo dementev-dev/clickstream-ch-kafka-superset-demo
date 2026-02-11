@@ -75,7 +75,7 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 | Prometheus | http://localhost:9090 | Метрики | — |
 | Grafana | http://localhost:3000 | Визуализация метрик | admin/admin |
 
-Superset: после `make up` готовый дашборд доступен по адресу http://localhost:8088/superset/dashboard/1/
+Superset: UI доступен после `make up` по адресу http://localhost:8088, дашборд — http://localhost:8088/superset/dashboard/1/
 
 ---
 
@@ -280,7 +280,7 @@ make superset-dashboard
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Superset UI   │────▶│   PostgreSQL     │────▶│   ClickHouse    │
+│   Superset UI   │────▶│   PostgreSQL     │───▶│   ClickHouse    │
 │   (localhost)   │     │   (metadata)     │     │   (данные)      │
 │     :8088       │     │  dashboards,     │     │  dm.v_* VIEW    │
 └─────────────────┘     │  datasets, charts│     └─────────────────┘
@@ -324,6 +324,7 @@ make superset-dashboard
   - Airflow (ClickHouseOperator) ходит в ClickHouse по native TCP (порт `9000` внутри сети Docker).
   - Superset (clickhouse-connect) ходит по HTTP (порт `8123` внутри сети Docker).
 - **Superset**: дашборд не появился сразу — подождите 30-60 секунд после `make up`, затем проверьте `curl http://localhost:8088/health`.
+- **Superset**: после `make clean` витрины `dm.*` ещё не созданы, поэтому чарты могут быть пустыми до запуска `ddl_init -> kafka_load -> etl_pipeline`; после этого выполните `make superset-init`.
 - **Superset**: при полном сбросе (`docker compose down -v`) метаданные Superset пропадут т.к. используется общая PostgreSQL. Для чистого перезапуска Superset удалите только БД `superset` в PostgreSQL и перезапустите контейнеры.
 
 ---

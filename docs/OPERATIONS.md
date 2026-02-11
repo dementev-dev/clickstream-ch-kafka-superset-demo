@@ -12,6 +12,7 @@
 - `make ddl` (применяет SQL из `sql/ddl/00_databases.sql` и `sql/ddl/*/*.sql` в ClickHouse)
 - `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
 - `make transform` (запускает batch-процесс ODS -> DDS -> DM)
+- `make superset-init` (повторная инициализация Superset: подключение к ClickHouse, датасеты, дашборд)
 - `docker compose ps`
 - `docker compose logs -f --tail=200 <service>`
 - `docker compose down` (сохраняет named volumes, включая `clickhouse-data`)
@@ -302,4 +303,5 @@ curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/aler
     docker compose up -d --force-recreate superset-init superset
     ```
 - После `docker compose down -v` нужно повторно прогнать: `ddl_init` -> `kafka_load` -> `etl_pipeline`.
+- После `make clean`/`down -v` Superset стартует, но витрины `dm.*` ещё пустые или отсутствуют до прогона ETL; после `ddl_init` -> `kafka_load` -> `etl_pipeline` выполнить `make superset-init`.
 - Для демо по умолчанию использовать малый срез данных; полный прогон делать осознанно.

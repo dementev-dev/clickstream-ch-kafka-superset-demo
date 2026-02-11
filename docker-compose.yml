@@ -180,6 +180,8 @@ services:
     depends_on:
       postgres-metadata:
         condition: service_healthy
+      clickhouse:
+        condition: service_started
 
   prometheus:
     image: prom/prometheus:v2.53.4
