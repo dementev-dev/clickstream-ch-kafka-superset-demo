@@ -293,5 +293,13 @@ curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/aler
     docker volume rm <project>_grafana_lib
     docker compose up -d grafana
     ```
+- В Superset ошибки `DB engine Error` и `Cannot load filter`, а в логах есть `Can't load plugin: sqlalchemy.dialects:clickhouse.connect`:
+  - Причина: некорректный URI диалекта ClickHouse (`clickhouse+connect://...`).
+  - Используйте URI `clickhousedb://...` и пересоберите сервисы Superset:
+    ```bash
+    docker compose build superset superset-init
+    docker compose up -d clickhouse
+    docker compose up -d --force-recreate superset-init superset
+    ```
 - После `docker compose down -v` нужно повторно прогнать: `ddl_init` -> `kafka_load` -> `etl_pipeline`.
 - Для демо по умолчанию использовать малый срез данных; полный прогон делать осознанно.

@@ -54,7 +54,7 @@ def build_clickhouse_uri() -> str:
     host = CLICKHOUSE_HOST
     port = CLICKHOUSE_PORT
     database = quote_plus(CLICKHOUSE_DATABASE)
-    return f"clickhouse+connect://{user}:{password}@{host}:{port}/{database}"
+    return f"clickhousedb://{user}:{password}@{host}:{port}/{database}"
 
 
 def run_superset_cli(args):
@@ -139,7 +139,7 @@ def import_datasets():
     
     # Создаем Python скрипт для выполнения внутри superset shell
     script_lines = [
-        "import clickhouse_connect  # Регистрирует диалект clickhouse+connect",
+        "import clickhouse_connect  # Регистрирует диалект clickhousedb",
         "from superset.extensions import db",
         "from superset.models.core import Database",
         "from superset.connectors.sqla.models import SqlaTable",
@@ -170,7 +170,18 @@ def import_datasets():
                 ").first()"
             ),
             "if existing:",
-            f"    print('Dataset {table_name} already exists')",
+            "    try:",
+            "        if not existing.columns:",
+            "            existing.fetch_metadata()",
+            "            db.session.commit()",
+            f"            print('Refreshed dataset metadata: {table_name}')",
+            "            refreshed += 1",
+            "        else:",
+            f"            print('Dataset {table_name} already exists')",
+            "    except Exception as e:",
+            f"        print(f'ERROR: failed to refresh {table_name}: {{e}}')",
+            "        db.session.rollback()",
+            "        errors += 1",
             "else:",
             "    try:",
             (
@@ -183,8 +194,10 @@ def import_datasets():
                 ")"
             ),
             "        db.session.add(dataset)",
+            "        db.session.flush()",
+            "        dataset.fetch_metadata()",
             "        db.session.commit()",
-            f"        print('Created dataset: {table_name} (metadata will be fetched on first use)')",
+            f"        print('Created dataset: {table_name}')",
             "        imported += 1",
             "    except Exception as e:",
             f"        print(f'ERROR: failed to create {table_name}: {{e}}')",
