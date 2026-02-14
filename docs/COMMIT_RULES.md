@@ -4,8 +4,12 @@ Unified commit style for all project contributors. Follows [Conventional Commits
 
 ## Language
 
-- **Primary language**: English
-- Russian is allowed for internal team convenience
+- **Primary language**: Russian
+- If language is not specified, use Russian
+- For AI-generated commits, Russian is mandatory unless task explicitly sets `lang:en`
+- English is allowed only by explicit instruction (`lang:en`) or external collaboration requirements
+- Do not mix languages in free-text parts of one commit message (subject + body + footer)
+- Conventional Commit `type(scope)` stays in English
 - Technical terms (Airflow, ClickHouse, Kafka, MV, DDL) keep as-is
 
 ## Header Format
@@ -15,8 +19,11 @@ Unified commit style for all project contributors. Follows [Conventional Commits
 ```
 
 - Maximum header length: 72 characters
-- Use imperative mood ("add", "fix", "update", not "added", "fixed")
+- For Russian subject, use result form (e.g. "добавлено", "исправлено", "обновлено")
+- For English subject, use imperative present form (e.g. "add", "fix", "update")
+- For English subject, do not use past forms (e.g. "added", "fixed", "updated")
 - No trailing period
+- Keep subject specific; avoid vague messages like "update", "fix bug", "changes"
 
 ### Allowed `type`
 
@@ -52,6 +59,12 @@ Unified commit style for all project contributors. Follows [Conventional Commits
 
 For non-trivial changes, body is required. Use bullet points for readability.
 
+Body is considered required when at least one condition is true:
+- behavior or API/contract changed
+- migration, rollback risk, or compatibility impact exists
+- more than one meaningful file/module changed
+- fix is non-obvious from header alone
+
 ### Multiline body in CLI (important)
 
 - Do not pass body as one quoted string with `\n` (it will be stored literally).
@@ -61,13 +74,13 @@ Correct:
 
 ```bash
 git commit \
-  -m "feat(monitoring): add Grafana alert rules" \
-  -m "- Why:
-  - need proactive signals for ClickHouse health
-- What:
-  - add alert provisioning file for failed queries, memory, parts
-  - pin Prometheus datasource uid for stable dashboard binding
-- Check:
+  -m "feat(monitoring): добавлены правила алертов Grafana" \
+  -m "- Зачем:
+  - нужны ранние сигналы проблем ClickHouse
+- Что:
+  - добавлен provisioning-файл алертов по failed queries, memory, parts
+  - зафиксирован uid источника Prometheus для стабильной привязки
+- Проверка:
   - POST /api/admin/provisioning/alerting/reload
   - GET /api/v1/provisioning/alert-rules"
 ```
@@ -76,37 +89,23 @@ Also correct:
 
 ```bash
 git commit -F- <<'MSG'
-feat(monitoring): add Grafana alert rules
+feat(monitoring): добавлены правила алертов Grafana
 
-- Why:
-  - need proactive signals for ClickHouse health
-- What:
-  - add alert provisioning file for failed queries, memory, parts
-  - pin Prometheus datasource uid for stable dashboard binding
-- Check:
+- Зачем:
+  - нужны ранние сигналы проблем ClickHouse
+- Что:
+  - добавлен provisioning-файл алертов по failed queries, memory, parts
+  - зафиксирован uid источника Prometheus для стабильной привязки
+- Проверка:
   - POST /api/admin/provisioning/alerting/reload
   - GET /api/v1/provisioning/alert-rules
 MSG
 ```
 
-### Template (English)
+### Template (Russian - default)
 
 ```
-<type>(<scope>): <short description>
-
-- Why:
-  - reason for change
-- What:
-  - key change 1
-  - key change 2
-- Check:
-  - how verified (command/test/smoke-check)
-```
-
-### Template (Russian - допустимо)
-
-```
-<type>(<scope>): <краткое описание>
+<type>(<scope>): <краткое описание результата>
 
 - Зачем:
   - причина изменения
@@ -115,6 +114,20 @@ MSG
   - ключевое изменение 2
 - Проверка:
   - как проверено
+```
+
+### Template (English - only with `lang:en`)
+
+```
+<type>(<scope>): <short action description>
+
+- Why:
+  - reason for change
+- What:
+  - key change 1
+  - key change 2
+- Check:
+  - how verified (command/test/smoke-check)
 ```
 
 ## Commit Scope Rules
@@ -140,66 +153,77 @@ BREAKING CHANGE: column event_type renamed to event_name
 ### Good examples
 
 ```
-feat(superset): add e-commerce analytics dashboard
+feat(superset): добавлен дашборд e-commerce аналитики
 
-- Why:
-  - Business needs visualization for clickstream analysis
-- What:
-  - Add superset-init service to docker-compose
-  - Create Python scripts for ClickHouse connection
-  - Add 10 charts (KPI, traffic, geo, UTM, DQ)
-  - Makefile commands superset-*
-- Check:
-  - Dashboard opens at http://localhost:8088
-  - All charts load data from dm.v_events_enriched
-```
-
-```
-fix(kafka): correct volume path for KRaft mode
-
-- Why:
-  - Kafka fails to start with permission denied on /tmp/kraft-combined-logs
-- What:
-  - Change volume path to /var/lib/kafka/data
-- Check:
-  - make up starts Kafka successfully
+- Зачем:
+  - нужна визуализация clickstream для бизнеса
+- Что:
+  - добавлен сервис superset-init в docker-compose
+  - добавлены скрипты подключения к ClickHouse
+  - добавлены 10 графиков (KPI, traffic, geo, UTM, DQ)
+  - добавлены команды superset-* в Makefile
+- Проверка:
+  - дашборд открывается на http://localhost:8088
+  - все графики загружают данные из dm.v_events_enriched
 ```
 
 ```
-docs(architecture): update data flow diagram after ODS migration
+fix(kafka): исправлен путь volume для режима KRaft
+
+- Зачем:
+  - Kafka не стартует из-за permission denied на /tmp/kraft-combined-logs
+- Что:
+  - путь volume изменен на /var/lib/kafka/data
+- Проверка:
+  - `make up` поднимает Kafka без ошибок
 ```
 
 ```
-chore(scripts): sync make transform with new ETL pipeline
+docs(architecture): обновлена схема потоков данных после миграции ODS
+```
+
+```
+chore(scripts): синхронизирован make transform с новым ETL пайплайном
 ```
 
 ### Bad examples (don't do this)
 
 ```
 ❌ added superset dashboard        # no type, past tense
-❌ feat: добавлен дашборд          # no scope, mixed languages
-❌ fix: исправлен баг              # no scope, past tense, vague description
+❌ feat: добавлен дашборд          # no scope
+❌ fix: исправлен баг              # no scope, vague and non-actionable
+❌ feat(ui): added new filters     # past tense in English subject
 ❌ feat(airflow): add feature and fix bug and update docs  # multiple concerns
+❌ feat(dm): add витрину и почини alert # mixed languages in one message
 ```
 
 ## Quick Reference
 
 ```bash
 # Feature
-feat(scope): add something new
+feat(scope): добавлена новая возможность
 
 # Bug fix
-fix(scope): correct something
+fix(scope): исправлена проблема
 
 # Documentation
-docs(scope): update something
+docs(scope): обновлена документация
 
 # Refactoring
-refactor(scope): restructure something
+refactor(scope): упрощена структура без изменения поведения
 
 # Performance
-perf(scope): optimize something
+perf(scope): ускорено выполнение
 
 # Maintenance
-chore(scope): update something
+chore(scope): обновлены служебные настройки
+
+# Feature (lang:en)
+feat(scope): add new capability
+
+# Bug fix (lang:en)
+fix(scope): correct response parsing
+
+# Documentation (lang:en)
+docs(scope): update setup guide
 ```
