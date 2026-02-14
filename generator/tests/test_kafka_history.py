@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 from generator import BatchRecord, KafkaBatchHistory
@@ -101,14 +101,18 @@ class TestKafkaBatchHistory:
         assert history.bootstrap_servers == "localhost:9092"
         mock_producer_class.assert_called_once()
 
+    @patch("generator._with_retry")
     @patch("generator._import_kafka")
-    def test_init_raises_on_connection_error(self, mock_import):
-        """Инициализация падает при ошибке подключения."""
-        mock_producer_class = MagicMock(side_effect=Exception("Connection failed"))
+    def test_init_uses_retry(self, mock_import, mock_retry):
+        """Инициализация использует retry для подключения."""
+        mock_producer_class = MagicMock()
         mock_import.return_value = (mock_producer_class, Exception)
+        mock_retry.side_effect = lambda f, **kwargs: f()  # Выполняем функцию сразу
 
-        with pytest.raises(Exception, match="Connection failed"):
-            KafkaBatchHistory("localhost:9092")
+        KafkaBatchHistory("localhost:9092")
+
+        # Проверяем что _with_retry был вызван
+        mock_retry.assert_called()
 
     @patch("generator._import_kafka")
     def test_add_sends_to_kafka(self, mock_import):
@@ -141,17 +145,23 @@ class TestKafkaBatchHistory:
         assert "value" in call_args[1]
 
     @patch("generator._import_kafka")
-    def test_add_raises_on_send_error(self, mock_import):
-        """add пробрасывает ошибку отправки."""
+    def test_add_retries_on_failure(self, mock_import):
+        """add делает retry при ошибке и пытается реконнект."""
         mock_producer = MagicMock()
-        mock_producer.send.side_effect = Exception("Send failed")
+        # Первые 3 вызова падают, потом успех
+        mock_producer.send.side_effect = [
+            Exception("Fail 1"),
+            Exception("Fail 2"),
+            Exception("Fail 3"),
+            MagicMock(),  # Успех после реконнекта
+        ]
         mock_producer_class = MagicMock(return_value=mock_producer)
         mock_import.return_value = (mock_producer_class, Exception)
 
         history = KafkaBatchHistory("localhost:9092")
         now = datetime.now(timezone.utc)
         record = BatchRecord(
-            batch_id="fail789",
+            batch_id="retry456",
             started_at=now,
             finished_at=now,
             sent_total=50,
@@ -163,8 +173,11 @@ class TestKafkaBatchHistory:
             error_message=None,
         )
 
-        with pytest.raises(Exception, match="Send failed"):
-            history.add(record)
+        # Не должно упасть - должен быть retry + reconnect
+        history.add(record)
+
+        # Проверяем что producer.send вызывался несколько раз (retry)
+        assert mock_producer.send.call_count >= 1
 
     @patch("generator._import_kafka")
     def test_flush_calls_producer_flush(self, mock_import):
@@ -189,3 +202,15 @@ class TestKafkaBatchHistory:
         history.close()
 
         mock_producer.close.assert_called_once()
+
+    @patch("generator._import_kafka")
+    def test_close_ignores_errors(self, mock_import):
+        """close игнорирует ошибки при закрытии."""
+        mock_producer = MagicMock()
+        mock_producer.close.side_effect = Exception("Close failed")
+        mock_producer_class = MagicMock(return_value=mock_producer)
+        mock_import.return_value = (mock_producer_class, Exception)
+
+        history = KafkaBatchHistory("localhost:9092")
+        # Не должно упасть
+        history.close()

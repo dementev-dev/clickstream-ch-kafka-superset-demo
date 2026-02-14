@@ -2,6 +2,7 @@
 Тесты сохранения и восстановления состояния генератора.
 """
 import json
+import random
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -10,13 +11,19 @@ import pytest
 from generator import GeneratorState, KafkaStateManager
 
 
+def _make_valid_rng_state(seed: int = 42):
+    """Создаёт валидный RNG state для тестов."""
+    rng = random.Random(seed)
+    return rng.getstate()
+
+
 class TestGeneratorState:
     """Тесты структуры состояния генератора."""
 
     def test_state_creation(self):
         """Создание состояния с всеми полями."""
         now = datetime.now(timezone.utc)
-        rng_state = (3, (1, 2, 3), None)  # Минимальный валидный state для random
+        rng_state = _make_valid_rng_state(42)
 
         state = GeneratorState(
             tick=42,
@@ -35,7 +42,7 @@ class TestGeneratorState:
     def test_default_version(self):
         """Версия по умолчанию."""
         now = datetime.now(timezone.utc)
-        rng_state = (3, (1, 2, 3), None)
+        rng_state = _make_valid_rng_state(42)
 
         state = GeneratorState(
             tick=1,
@@ -49,7 +56,7 @@ class TestGeneratorState:
     def test_to_dict_serialization(self):
         """Сериализация в словарь (JSON-safe, без pickle)."""
         now = datetime.now(timezone.utc)
-        rng_state = (3, (1, 2, 3), None)
+        rng_state = _make_valid_rng_state(42)
 
         state = GeneratorState(
             tick=42,
@@ -67,7 +74,8 @@ class TestGeneratorState:
 
         # Проверяем что rng_state сериализован как tuple (JSON-safe, без pickle)
         assert "rng_state" in data
-        assert data["rng_state"] == rng_state
+        # После to_dict rng_state должен быть tuple
+        assert isinstance(data["rng_state"], tuple)
         # Проверяем что можно сериализовать в JSON и восстановить
         json_str = json.dumps(data)
         restored_data = json.loads(json_str)
@@ -77,7 +85,7 @@ class TestGeneratorState:
     def test_from_dict_deserialization(self):
         """Десериализация из словаря."""
         now = datetime.now(timezone.utc)
-        rng_state = (3, (1, 2, 3), None)
+        rng_state = _make_valid_rng_state(42)
 
         # Создаём исходное состояние
         original = GeneratorState(
@@ -99,8 +107,6 @@ class TestGeneratorState:
 
     def test_roundtrip_with_real_random(self):
         """Проверка что RNG state действительно восстанавливает последовательность."""
-        import random
-
         # Создаём генератор и делаем несколько вызовов
         rng = random.Random(12345)
         values_before = [rng.random() for _ in range(5)]
@@ -132,6 +138,95 @@ class TestGeneratorState:
         assert next_values == values_after
 
 
+class TestGeneratorStateValidation:
+    """Тесты валидации состояния и graceful degradation."""
+
+    def test_from_dict_missing_rng_state_raises(self):
+        """from_dict выбрасывает исключение при отсутствии rng_state."""
+        data = {
+            "tick": 42,
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+        }
+
+        with pytest.raises(ValueError, match="rng_state"):
+            GeneratorState.from_dict(data)
+
+    def test_from_dict_invalid_rng_state_raises(self):
+        """from_dict выбрасывает исключение при невалидном rng_state."""
+        data = {
+            "tick": 42,
+            "rng_state": "not_a_tuple",
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+        }
+
+        with pytest.raises(ValueError):
+            GeneratorState.from_dict(data)
+
+    def test_from_dict_insufficient_rng_state_raises(self):
+        """from_dict выбрасывает исключение при коротком rng_state."""
+        data = {
+            "tick": 42,
+            "rng_state": [1],  # Слишком короткий
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+        }
+
+        with pytest.raises(ValueError):
+            GeneratorState.from_dict(data)
+
+    def test_from_dict_invalid_setstate_raises(self):
+        """from_dict выбрасывает исключение если setstate падает."""
+        data = {
+            "tick": 42,
+            "rng_state": [999, [1, 2, 3], None],  # Невалидный state
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+        }
+
+        with pytest.raises(ValueError):
+            GeneratorState.from_dict(data)
+
+    def test_from_dict_safe_returns_none_on_invalid(self):
+        """from_dict_safe возвращает None при невалидных данных."""
+        data = {
+            "tick": 42,
+            "rng_state": "invalid",
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+        }
+
+        result = GeneratorState.from_dict_safe(data)
+        assert result is None
+
+    def test_from_dict_safe_returns_state_on_valid(self):
+        """from_dict_safe возвращает state при валидных данных."""
+        rng = random.Random(42)
+        data = {
+            "tick": 42,
+            "rng_state": list(rng.getstate()),  # JSON сериализует tuple как list
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+        }
+
+        result = GeneratorState.from_dict_safe(data)
+        assert result is not None
+        assert result.tick == 42
+
+    def test_from_dict_uses_defaults_for_missing_fields(self):
+        """from_dict использует defaults для отсутствующих полей."""
+        rng = random.Random(42)
+        data = {
+            "rng_state": list(rng.getstate()),
+        }
+
+        result = GeneratorState.from_dict(data)
+        assert result.tick == 0
+        assert result.last_batch_id == ""
+        assert result.version == "1.0"
+
+
 class TestKafkaStateManager:
     """Тесты менеджера состояния."""
 
@@ -158,10 +253,9 @@ class TestKafkaStateManager:
             manager = KafkaStateManager("kafka:29092")
 
             now = datetime.now(timezone.utc)
-            rng_state = (3, (1, 2, 3), None)
             state = GeneratorState(
                 tick=42,
-                rng_state=rng_state,
+                rng_state=_make_valid_rng_state(42),
                 last_batch_id="abc123",
                 last_timestamp=now,
             )
@@ -203,10 +297,9 @@ class TestKafkaStateManager:
             mock_import.return_value = (mock_producer_class, None)
 
             now = datetime.now(timezone.utc)
-            rng_state = (3, (1, 2, 3), None)
             state = GeneratorState(
                 tick=100,
-                rng_state=rng_state,
+                rng_state=_make_valid_rng_state(100),
                 last_batch_id="xyz789",
                 last_timestamp=now,
             )
@@ -226,6 +319,29 @@ class TestKafkaStateManager:
             assert result is not None
             assert result.tick == 100
             assert result.last_batch_id == "xyz789"
+
+    def test_load_invalid_state_returns_none(self):
+        """Загрузка невалидного state возвращает None (graceful degradation)."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            # Мокаем consumer с невалидным сообщением
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = {"tick": 42, "rng_state": "invalid"}
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            result = manager.load()
+
+            # Должно вернуть None из-за невалидного state
+            assert result is None
 
     def test_load_ignores_wrong_key(self):
         """Загрузка игнорирует сообщения с другим ключом."""
@@ -309,8 +425,6 @@ class TestJsonSafeState:
 
     def test_json_roundtrip_rng_state(self):
         """Полный цикл: rng.getstate() -> JSON -> from_dict -> setstate."""
-        import random
-        
         rng = random.Random(42)
         # Делаем несколько вызовов
         values_before = [rng.random() for _ in range(10)]

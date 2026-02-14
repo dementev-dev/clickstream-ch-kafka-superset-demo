@@ -400,14 +400,55 @@ class GeneratorState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "GeneratorState":
-        """Создаёт состояние из словаря (JSON-only, без pickle)."""
-        return cls(
-            tick=data["tick"],
-            rng_state=_nested_list_to_tuple(data["rng_state"]),  # рекурсивно list->tuple
-            last_batch_id=data["last_batch_id"],
-            last_timestamp=datetime.fromisoformat(data["last_timestamp"]),
-            version=data.get("version", "1.0"),
-        )
+        """Создаёт состояние из словаря (JSON-only, без pickle).
+        
+        При невалидном rng_state логирует предупреждение и возвращает None
+        (вызывающий код должен обработать как "начать с чистого листа").
+        """
+        try:
+            rng_state_raw = data.get("rng_state")
+            if not rng_state_raw:
+                logger.warning("State missing rng_state field")
+                raise ValueError("rng_state is missing")
+            
+            rng_state = _nested_list_to_tuple(rng_state_raw)
+            
+            # Валидация: rng_state должен быть tuple и иметь минимальную структуру
+            if not isinstance(rng_state, tuple):
+                logger.warning(f"rng_state is not tuple: {type(rng_state)}")
+                raise ValueError("rng_state must be tuple")
+            
+            if len(rng_state) < 2:
+                logger.warning(f"rng_state has insufficient length: {len(rng_state)}")
+                raise ValueError("rng_state has insufficient length")
+            
+            # Проверка что можем создать RNG и вызвать setstate (тестовая валидация)
+            test_rng = random.Random()
+            test_rng.setstate(rng_state)
+            
+            return cls(
+                tick=data.get("tick", 0),
+                rng_state=rng_state,
+                last_batch_id=data.get("last_batch_id", ""),
+                last_timestamp=datetime.fromisoformat(data.get("last_timestamp", "1970-01-01T00:00:00+00:00")),
+                version=data.get("version", "1.0"),
+            )
+        except Exception as e:
+            logger.warning(f"Invalid state format, will start fresh: {e}")
+            raise ValueError(f"Invalid state: {e}")
+
+    @classmethod
+    def from_dict_safe(cls, data: dict) -> "GeneratorState | None":
+        """Безопасная загрузка state с graceful degradation.
+        
+        Returns:
+            GeneratorState если данные валидны, иначе None (начать с чистого листа).
+        """
+        try:
+            return cls.from_dict(data)
+        except Exception:
+            # Уже залогировано в from_dict
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -434,28 +475,43 @@ class KafkaStateManager:
         logger.info("Connected to Kafka for state management successfully")
 
     def save(self, state: GeneratorState) -> None:
-        """Сохраняет состояние в топик (compact topic - только последнее значение)."""
+        """Сохраняет состояние в топик (compact topic - только последнее значение).
+        
+        Использует retry при сбоях подключения к Kafka.
+        """
         value = state.to_dict()
-        self.producer.send(self.STATE_TOPIC, key=self.STATE_KEY, value=value)
+        
+        def _do_send():
+            self.producer.send(self.STATE_TOPIC, key=self.STATE_KEY, value=value)
+        
+        _with_retry(_do_send, max_retries=3, base_delay=0.5)
 
     def flush(self) -> None:
-        """Сбрасывает буфер."""
-        self.producer.flush()
+        """Сбрасывает буфер с retry."""
+        def _do_flush():
+            self.producer.flush()
+        
+        _with_retry(_do_flush, max_retries=3, base_delay=0.5)
 
     def close(self) -> None:
         """Закрывает соединение."""
-        self.producer.close()
+        try:
+            self.producer.close()
+        except Exception as e:
+            logger.debug(f"Error closing producer (ignored): {e}")
 
     def load(self) -> GeneratorState | None:
         """Загружает последнее состояние из топика.
 
         Для compact topic хранится только последнее значение для ключа,
         поэтому читаем все сообщения и берём последнее с нужным ключом.
+        Использует retry при сбоях подключения к Kafka.
         """
         from kafka import KafkaConsumer
 
         logger.info(f"Loading state from topic {self.STATE_TOPIC}")
-        try:
+        
+        def _do_load():
             consumer = KafkaConsumer(
                 self.STATE_TOPIC,
                 bootstrap_servers=self.bootstrap_servers,
@@ -471,11 +527,19 @@ class KafkaStateManager:
                     last_state = message.value
 
             consumer.close()
+            return last_state
+        
+        try:
+            last_state = _with_retry(_do_load, max_retries=3, base_delay=0.5)
 
             if last_state:
                 logger.info(f"Restored state: tick={last_state.get('tick')}, "
                            f"last_batch_id={last_state.get('last_batch_id')}")
-                return GeneratorState.from_dict(last_state)
+                # Используем from_dict_safe для graceful degradation при битом state
+                restored = GeneratorState.from_dict_safe(last_state)
+                if restored is None:
+                    logger.warning("State data was invalid, starting fresh")
+                return restored
             else:
                 logger.info("No previous state found, starting fresh")
                 return None
@@ -567,44 +631,9 @@ def ensure_topics(bootstrap_servers: str) -> None:
 # Kafka history - пишет историю в отдельный топик
 # ---------------------------------------------------------------------------
 class KafkaBatchHistory:
-    """Хранение истории batch в Kafka (отдельный топик)."""
+    """Хранение истории batch в Kafka (отдельный топик) с retry."""
 
     HISTORY_TOPIC = "generator_batch_history"
-
-    def __init__(self, bootstrap_servers: str):
-        self.bootstrap_servers = bootstrap_servers
-        KafkaProducerCls, _ = _import_kafka()
-
-        logger.info(f"Connecting to Kafka for history at {self.bootstrap_servers}")
-        self.producer = KafkaProducerCls(
-            bootstrap_servers=self.bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            key_serializer=lambda k: k.encode("utf-8") if k else None,
-            retries=3,
-            retry_backoff_ms=1000,
-        )
-        logger.info("Connected to Kafka for history successfully")
-
-    def add(self, record: BatchRecord):
-        """Добавляет запись в историю (топик Kafka)."""
-        key = record.batch_id
-        value = record.to_dict()
-        self.producer.send(self.HISTORY_TOPIC, key=key, value=value)
-
-    def flush(self):
-        """Сбрасывает буфер."""
-        self.producer.flush()
-
-    def close(self):
-        """Закрывает соединение."""
-        self.producer.close()
-
-
-# ---------------------------------------------------------------------------
-# Kafka publisher
-# ---------------------------------------------------------------------------
-class KafkaPublisher:
-    """Публикация событий в Kafka."""
 
     def __init__(self, bootstrap_servers: str):
         self.bootstrap_servers = bootstrap_servers
@@ -612,11 +641,71 @@ class KafkaPublisher:
         self._connect()
 
     def _connect(self):
-        """Устанавливает соединение с Kafka."""
+        """Устанавливает соединение с Kafka с retry."""
         KafkaProducerCls, KafkaErrorCls = _import_kafka()
-        
-        logger.info(f"Connecting to Kafka at {self.bootstrap_servers}")
+
+        def _do_connect():
+            logger.info(f"Connecting to Kafka for history at {self.bootstrap_servers}")
+            self.producer = KafkaProducerCls(
+                bootstrap_servers=self.bootstrap_servers,
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                key_serializer=lambda k: k.encode("utf-8") if k else None,
+                retries=3,
+                retry_backoff_ms=1000,
+            )
+            logger.info("Connected to Kafka for history successfully")
+
+        _with_retry(_do_connect, max_retries=5, base_delay=1.0)
+
+    def add(self, record: BatchRecord):
+        """Добавляет запись в историю (топик Kafka) с retry и реконнектом."""
+        key = record.batch_id
+        value = record.to_dict()
+
+        def _do_send():
+            self.producer.send(self.HISTORY_TOPIC, key=key, value=value)
+
         try:
+            _with_retry(_do_send, max_retries=3, base_delay=0.5)
+        except Exception as e:
+            logger.warning(f"Failed to send history record after retries: {e}, attempting reconnect")
+            self._connect()
+            # Повторная попытка после реконнекта
+            _with_retry(_do_send, max_retries=2, base_delay=0.5)
+
+    def flush(self):
+        """Сбрасывает буфер с retry."""
+        def _do_flush():
+            self.producer.flush()
+
+        _with_retry(_do_flush, max_retries=3, base_delay=0.5)
+
+    def close(self):
+        """Закрывает соединение."""
+        try:
+            if self.producer:
+                self.producer.close()
+        except Exception as e:
+            logger.debug(f"Error closing history producer (ignored): {e}")
+
+
+# ---------------------------------------------------------------------------
+# Kafka publisher
+# ---------------------------------------------------------------------------
+class KafkaPublisher:
+    """Публикация событий в Kafka с retry и реконнектом."""
+
+    def __init__(self, bootstrap_servers: str):
+        self.bootstrap_servers = bootstrap_servers
+        self.producer = None
+        self._connect()
+
+    def _connect(self):
+        """Устанавливает соединение с Kafka с retry."""
+        KafkaProducerCls, KafkaErrorCls = _import_kafka()
+
+        def _do_connect():
+            logger.info(f"Connecting to Kafka at {self.bootstrap_servers}")
             self.producer = KafkaProducerCls(
                 bootstrap_servers=self.bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -627,22 +716,14 @@ class KafkaPublisher:
                 retry_backoff_ms=1000,
             )
             logger.info("Connected to Kafka successfully")
-        except KafkaErrorCls as e:
-            logger.error(f"Failed to connect to Kafka: {e}")
-            raise
 
-    def publish(self, topic: str, events: list[dict]) -> tuple[int, int]:
-        """
-        Публикует события в топик.
+        _with_retry(_do_connect, max_retries=5, base_delay=1.0)
 
-        Returns:
-            (sent_count, error_count)
-        """
+    def _publish_with_retry(self, topic: str, events: list[dict]) -> tuple[int, int]:
+        """Внутренняя функция публикации с retry на уровне batch."""
         if not self.producer:
             raise RuntimeError("Producer not connected")
 
-        _, KafkaErrorCls = _import_kafka()
-        
         sent = 0
         errors = 0
         futures = []
@@ -670,15 +751,39 @@ class KafkaPublisher:
 
         return sent, errors
 
+    def publish(self, topic: str, events: list[dict]) -> tuple[int, int]:
+        """
+        Публикует события в топик с retry и автоматическим реконнектом.
+
+        Returns:
+            (sent_count, error_count)
+        """
+        def _do_publish():
+            return self._publish_with_retry(topic, events)
+
+        try:
+            return _with_retry(_do_publish, max_retries=3, base_delay=0.5)
+        except Exception as e:
+            logger.warning(f"Publish failed after retries: {e}, attempting reconnect")
+            self._connect()
+            # Повторная попытка после реконнекта
+            return _with_retry(_do_publish, max_retries=2, base_delay=0.5)
+
     def flush(self):
-        """Сбрасывает буфер."""
-        if self.producer:
-            self.producer.flush()
+        """Сбрасывает буфер с retry."""
+        def _do_flush():
+            if self.producer:
+                self.producer.flush()
+
+        _with_retry(_do_flush, max_retries=3, base_delay=0.5)
 
     def close(self):
         """Закрывает соединение."""
-        if self.producer:
-            self.producer.close()
+        try:
+            if self.producer:
+                self.producer.close()
+        except Exception as e:
+            logger.debug(f"Error closing producer (ignored): {e}")
 
 
 # ---------------------------------------------------------------------------
