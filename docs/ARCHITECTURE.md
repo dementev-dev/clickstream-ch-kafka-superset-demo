@@ -27,8 +27,12 @@
 flowchart LR
     subgraph AF["Airflow"]
         DAG1["ddl_init"]
-        DAG2["kafka_load"]
+        DAG2["kafka_load (bootstrap)"]
         DAG3["etl_pipeline"]
+    end
+
+    subgraph GEN["Generator"]
+        G["generator-service (steady-stream)"]
     end
 
     subgraph Kafka["Kafka"]
@@ -53,7 +57,9 @@ flowchart LR
         V[витрины VIEW]
     end
 
-    DAG2 -->|JSONL| K -->|MV| S
+    DAG2 -->|bootstrap JSONL| K
+    G -->|stream events| K
+    K -->|MV| S
     S -->|batch| O
     O -->|argMax + JOIN| D1 & D2
     O -.->|ошибки| OE
@@ -63,14 +69,23 @@ flowchart LR
     DAG3 -.->|batch| ODS & DDS
 ```
 
+В учебном стенде предусмотрены два пути ingest:
+
+- `bootstrap`: DAG `kafka_load` для разового/контрольного прогона из `data/*.jsonl`;
+- `steady-stream`: автономный генератор, публикующий события в Kafka непрерывно.
+
 ### Слои и их назначение
 
 ```mermaid
 flowchart LR
     subgraph AF["Airflow"]
         DAG1["ddl_init"]
-        DAG2["kafka_load"]
+        DAG2["kafka_load (bootstrap)"]
         DAG3["etl_pipeline"]
+    end
+
+    subgraph GEN["Generator"]
+        G["generator-service"]
     end
 
     subgraph L1["STG"]
@@ -91,7 +106,9 @@ flowchart LR
         DM_T["VIEW"]
     end
 
-    DAG2 -->|JSONL| KAFKA -->|MV| STG_T
+    DAG2 -->|bootstrap JSONL| KAFKA
+    G -->|steady-stream| KAFKA
+    KAFKA -->|MV| STG_T
     STG_T -->|batch| ODS_T
     ODS_T -->|argMax + JOIN| DDS_T -->|VIEW| DM_T
     ODS_T -.->|ошибки| DQ
@@ -347,6 +364,7 @@ sequenceDiagram
     participant User as Пользователь
     participant Compose as Docker Compose
     participant Airflow as Airflow
+    participant Gen as generator-service
     participant K as Kafka
     participant CH as ClickHouse
     participant STG as stg.*_raw
@@ -358,6 +376,7 @@ sequenceDiagram
     Compose->>K: docker compose up -d kafka
     Compose->>CH: docker compose up -d clickhouse
     Compose->>Airflow: docker compose up -d airflow-*
+    Compose->>Gen: docker compose up -d generator
     Compose-->>User: ✅ Инфраструктура готова
 
     User->>Airflow: Trigger ddl_init
@@ -368,14 +387,22 @@ sequenceDiagram
     Airflow->>CH: sql/ddl/dm/40_dm.sql
     CH-->>User: ✅ Структура БД создана
 
-    User->>Airflow: Trigger kafka_load
-    Airflow->>K: precheck + prepare_topics
-    loop 4 файла
-        Airflow->>K: KafkaProducer.send(topic, json_line)
+    alt Bootstrap режим
+        User->>Airflow: Trigger kafka_load
+        Airflow->>K: precheck + prepare_topics
+        loop 4 файла
+            Airflow->>K: KafkaProducer.send(topic, json_line)
+        end
+        K-->>User: ✅ Данные в Kafka
+    else Streaming режим
+        loop каждые 1-10 секунд
+            Gen->>K: send N_t (Poisson) в 4 топика
+        end
+        K-->>User: ✅ Непрерывный поток в Kafka
     end
+
     K->>CH: Потребление сообщений
     CH->>STG: INSERT через MV
-    K-->>User: ✅ Данные в Kafka
     CH-->>User: ✅ Данные в STG
 
     User->>Airflow: Trigger etl_pipeline
@@ -607,20 +634,25 @@ INSERT INTO dm.daily_traffic SELECT * FROM dm.v_daily_traffic;
 
 ### Airflow-оркестрация
 
-Инфраструктура Airflow развёрнута и готова к использованию:
+Инфраструктура Airflow развёрнута и отвечает за DDL/ETL.  
+Генератор работает отдельно и не управляется через Airflow DAG-и.
 
 ```python
 # airflow/dags/ddl_init_dag.py — создание баз/таблиц (ручной запуск при bootstrap)
-# airflow/dags/kafka_load_dag.py — загрузка JSONL в Kafka (через kafka-python)
+# airflow/dags/kafka_load_dag.py — bootstrap-загрузка JSONL в Kafka (через kafka-python)
 # airflow/dags/etl_pipeline_dag.py — основной ETL (STG→ODS→DDS→DM)
 
 # Учебный формат:
 # - DDL и трансформации выполняются явными SQL-task через ClickHouseOperator;
 # - SQL-файлы вызываются по фиксированным путям;
-# - загрузка данных в Kafka выполняется через DAG `kafka_load`.
+# - ingest может идти двумя путями:
+#   1) bootstrap через DAG `kafka_load`;
+#   2) непрерывный поток через автономный `generator-service`.
 #
-# Основной demo-сценарий:
+# Базовый demo-сценарий:
 # ddl_init -> kafka_load -> etl_pipeline
+# Расширенный учебный сценарий:
+# generator-service (continuous) + периодический etl_pipeline
 ```
 
 **DAG `kafka_load`**:

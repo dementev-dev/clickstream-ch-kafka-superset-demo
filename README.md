@@ -9,8 +9,10 @@
 витринами.
 
 Поток данных коротко:
-`data/*.jsonl → Airflow (kafka_load) → Kafka → ClickHouse (слой STG) → Airflow
-(etl_pipeline: STG → ODS → DDS → DM) → Superset`.
+- **bootstrap**: `data/*.jsonl → Airflow (kafka_load) → Kafka → ClickHouse (слой STG) →
+  Airflow (etl_pipeline: STG → ODS → DDS → DM) → Superset`.
+- **steady-stream**: `generator-service → Kafka → ClickHouse (STG) → Airflow (etl_pipeline)
+  → Superset`.
 
 ## Куда дальше
 
