@@ -85,7 +85,13 @@ curl http://localhost:9090/api/v1/targets | grep generator
 
 ## История batch
 
-История пишется в Kafka-топик `generator_batch_history` (JSON). При недоступности Kafka используется in-memory fallback (последние 1000 записей).
+История пишется в Kafka-топик `generator_batch_history` (JSON).
+
+**Контракт топика:**
+- Название фиксировано: `generator_batch_history` (не конфигурируется)
+- Формат: JSON с ключом `batch_id`
+
+**Важно:** генератор требует работающей Kafka. Без Kafka генератор упадёт при старте или потеряет события. Для мониторинга доступности используйте Prometheus-метрики (`generator_last_success_timestamp`).
 
 Поля сообщения:
 - `batch_id` — идентификатор батча

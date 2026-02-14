@@ -98,21 +98,17 @@ class TestKafkaBatchHistory:
 
         history = KafkaBatchHistory("localhost:9092")
 
-        assert history._initialized is True
         assert history.bootstrap_servers == "localhost:9092"
         mock_producer_class.assert_called_once()
 
     @patch("generator._import_kafka")
-    def test_init_handles_connection_error(self, mock_import):
-        """Инициализация обрабатывает ошибку подключения."""
-        # Симулируем ошибку при создании producer
+    def test_init_raises_on_connection_error(self, mock_import):
+        """Инициализация падает при ошибке подключения."""
         mock_producer_class = MagicMock(side_effect=Exception("Connection failed"))
         mock_import.return_value = (mock_producer_class, Exception)
 
-        history = KafkaBatchHistory("localhost:9092")
-
-        assert history._initialized is False
-        assert history.producer is None
+        with pytest.raises(Exception, match="Connection failed"):
+            KafkaBatchHistory("localhost:9092")
 
     @patch("generator._import_kafka")
     def test_add_sends_to_kafka(self, mock_import):
@@ -145,32 +141,8 @@ class TestKafkaBatchHistory:
         assert "value" in call_args[1]
 
     @patch("generator._import_kafka")
-    def test_add_skips_if_not_initialized(self, mock_import):
-        """add пропускает если не инициализирован."""
-        mock_producer_class = MagicMock(side_effect=Exception("Connection failed"))
-        mock_import.return_value = (mock_producer_class, Exception)
-
-        history = KafkaBatchHistory("localhost:9092")
-        now = datetime.now(timezone.utc)
-        record = BatchRecord(
-            batch_id="skip456",
-            started_at=now,
-            finished_at=now,
-            sent_total=0,
-            sent_browser=0,
-            sent_location=0,
-            sent_device=0,
-            sent_geo=0,
-            status="error",
-            error_message="Test",
-        )
-
-        # Не должно упасть
-        history.add(record)
-
-    @patch("generator._import_kafka")
-    def test_add_handles_send_error(self, mock_import):
-        """add обрабатывает ошибку отправки."""
+    def test_add_raises_on_send_error(self, mock_import):
+        """add пробрасывает ошибку отправки."""
         mock_producer = MagicMock()
         mock_producer.send.side_effect = Exception("Send failed")
         mock_producer_class = MagicMock(return_value=mock_producer)
@@ -191,8 +163,8 @@ class TestKafkaBatchHistory:
             error_message=None,
         )
 
-        # Не должно упасть
-        history.add(record)
+        with pytest.raises(Exception, match="Send failed"):
+            history.add(record)
 
     @patch("generator._import_kafka")
     def test_flush_calls_producer_flush(self, mock_import):
@@ -207,16 +179,6 @@ class TestKafkaBatchHistory:
         mock_producer.flush.assert_called_once()
 
     @patch("generator._import_kafka")
-    def test_flush_noop_if_not_initialized(self, mock_import):
-        """flush ничего не делает если не инициализирован."""
-        mock_producer_class = MagicMock(side_effect=Exception("Connection failed"))
-        mock_import.return_value = (mock_producer_class, Exception)
-
-        history = KafkaBatchHistory("localhost:9092")
-        # Не должно упасть
-        history.flush()
-
-    @patch("generator._import_kafka")
     def test_close_calls_producer_close(self, mock_import):
         """close вызывает close у producer."""
         mock_producer = MagicMock()
@@ -227,37 +189,3 @@ class TestKafkaBatchHistory:
         history.close()
 
         mock_producer.close.assert_called_once()
-
-    @patch("generator._import_kafka")
-    def test_close_noop_if_not_initialized(self, mock_import):
-        """close ничего не делает если не инициализирован."""
-        mock_producer_class = MagicMock(side_effect=Exception("Connection failed"))
-        mock_import.return_value = (mock_producer_class, Exception)
-
-        history = KafkaBatchHistory("localhost:9092")
-        # Не должно упасть
-        history.close()
-
-    @patch("generator._import_kafka")
-    def test_get_stats_returns_status(self, mock_import):
-        """get_stats возвращает статус инициализации."""
-        mock_producer_class = MagicMock()
-        mock_import.return_value = (mock_producer_class, Exception)
-
-        history = KafkaBatchHistory("localhost:9092")
-        stats = history.get_stats()
-
-        assert stats["initialized"] is True
-        assert stats["topic"] == "generator_batch_history"
-
-    @patch("generator._import_kafka")
-    def test_get_stats_handles_not_initialized(self, mock_import):
-        """get_stats корректен при неинициализированном состоянии."""
-        mock_producer_class = MagicMock(side_effect=Exception("Connection failed"))
-        mock_import.return_value = (mock_producer_class, Exception)
-
-        history = KafkaBatchHistory("localhost:9092")
-        stats = history.get_stats()
-
-        assert stats["initialized"] is False
-        assert stats["topic"] == "generator_batch_history"

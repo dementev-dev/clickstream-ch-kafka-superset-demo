@@ -6,23 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from generator import (
-    Config, EventDictionary, GeneratorService,
-    InMemoryBatchHistory, KafkaBatchHistory
+    Config, EventDictionary, GeneratorService, KafkaBatchHistory
 )
-
-
-class TestConfigHistoryTopic:
-    """Тесты для history_topic в конфигурации."""
-
-    def test_default_history_topic(self, base_config):
-        """По умолчанию топик истории."""
-        assert base_config.history_topic == "generator_batch_history"
-
-    def test_custom_history_topic(self, base_config):
-        """Кастомный топик истории."""
-        from dataclasses import replace
-        custom_config = replace(base_config, history_topic="custom_history")
-        assert custom_config.history_topic == "custom_history"
 
 
 class TestBatchRecordWithDictConversion:

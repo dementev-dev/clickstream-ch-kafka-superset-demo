@@ -58,7 +58,6 @@ class TestConfigDefaults:
                 seed=None,
                 enabled=True,
                 metrics_port=9109,
-                history_topic="generator_batch_history",
             )
             assert config.tick_seconds == 5
         finally:

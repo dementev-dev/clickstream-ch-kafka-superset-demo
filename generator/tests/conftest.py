@@ -38,7 +38,6 @@ def base_config(data_dir):
         seed=42,
         enabled=True,
         metrics_port=9109,
-        history_topic="generator_batch_history",
     )
 
 

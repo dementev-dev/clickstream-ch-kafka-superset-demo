@@ -68,6 +68,57 @@
   `dds.event -> dds.click`. Для `assert_dds_integrity` задано `retries=0`: повтор не
   чинит уже собранную сироту и только задерживает явный failed-статус.
 
+## Генератор событий (автономный стриминг)
+
+Автономный сервис для непрерывной генерации событий в Kafka. Работает независимо от Airflow DAGs.
+
+### Управление
+
+```bash
+# Запустить генератор
+make generator-up
+
+# Остановить генератор
+make generator-down
+
+# Перезапуск с пересборкой
+make generator-restart
+
+# Логи
+make generator-logs
+```
+
+### Конфигурация (env)
+
+| Переменная | Описание | По умолчанию |
+|------------|----------|--------------|
+| `GEN_TICK_SECONDS` | Интервал между тиками | `5` |
+| `GEN_LAMBDA_BASE_PER_MIN` | Базовая интенсивность (событий/мин) | `200` |
+| `GEN_JITTER_PCT` | Процент вариативности | `20` |
+| `GEN_MIN_EVENTS_PER_TICK` | Минимум событий за тик | `5` |
+| `GEN_MAX_EVENTS_PER_TICK` | Максимум событий за тик | `50` |
+
+### Топик истории
+
+Генератор пишет историю батчей в топик `generator_batch_history` (JSON, ключ `batch_id`).
+
+**Важно:** генератор требует работающей Kafka. Без Kafka генератор упадёт при старте или потеряет события.
+
+```bash
+# Чтение истории из Kafka
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic generator_batch_history \
+  --from-beginning
+```
+
+### Метрики
+
+Prometheus метрики доступны на `http://localhost:9109/metrics`:
+- `generator_events_total` — счётчик отправленных событий
+- `generator_publish_errors_total` — ошибки публикации
+- `generator_tick_duration_seconds` — длительность тика
+
 ## Рекомендуемый сценарий (фаза 2)
 
 ```bash

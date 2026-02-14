@@ -122,11 +122,6 @@ class Config:
         default_factory=lambda: int(os.getenv("GEN_METRICS_PORT", "9109"))
     )
 
-    # Топик для истории batch
-    history_topic: str = field(
-        default_factory=lambda: os.getenv("GEN_HISTORY_TOPIC", "generator_batch_history")
-    )
-
     def __post_init__(self):
         # Валидация параметров
         if self.tick_seconds < 1:
@@ -344,32 +339,6 @@ class BatchRecord:
 
 
 # ---------------------------------------------------------------------------
-# In-memory fallback для истории
-# ---------------------------------------------------------------------------
-class InMemoryBatchHistory:
-    """Fallback хранение истории batch в памяти."""
-
-    def __init__(self):
-        self.batches: list[BatchRecord] = []
-
-    def add(self, record: BatchRecord):
-        self.batches.append(record)
-        if len(self.batches) > 1000:
-            self.batches = self.batches[-1000:]
-
-    def get_stats(self) -> dict:
-        if not self.batches:
-            return {}
-        total = len(self.batches)
-        success = sum(1 for b in self.batches if b.status == "success")
-        return {
-            "total_batches": total,
-            "success_rate": success / total if total > 0 else 0,
-            "last_batch_status": self.batches[-1].status if self.batches else None,
-        }
-
-
-# ---------------------------------------------------------------------------
 # Kafka history - пишет историю в отдельный топик
 # ---------------------------------------------------------------------------
 class KafkaBatchHistory:
@@ -379,58 +348,31 @@ class KafkaBatchHistory:
 
     def __init__(self, bootstrap_servers: str):
         self.bootstrap_servers = bootstrap_servers
-        self.producer = None
-        self._initialized = False
-        self._connect()
-
-    def _connect(self):
-        """Устанавливает соединение с Kafka."""
-        KafkaProducerCls, KafkaErrorCls = _import_kafka()
+        KafkaProducerCls, _ = _import_kafka()
 
         logger.info(f"Connecting to Kafka for history at {self.bootstrap_servers}")
-        try:
-            self.producer = KafkaProducerCls(
-                bootstrap_servers=self.bootstrap_servers,
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                key_serializer=lambda k: k.encode("utf-8") if k else None,
-                retries=3,
-                retry_backoff_ms=1000,
-            )
-            self._initialized = True
-            logger.info("Connected to Kafka for history successfully")
-        except Exception as e:
-            logger.warning(f"Failed to connect to Kafka for history: {e}")
-            self._initialized = False
+        self.producer = KafkaProducerCls(
+            bootstrap_servers=self.bootstrap_servers,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            key_serializer=lambda k: k.encode("utf-8") if k else None,
+            retries=3,
+            retry_backoff_ms=1000,
+        )
+        logger.info("Connected to Kafka for history successfully")
 
     def add(self, record: BatchRecord):
         """Добавляет запись в историю (топик Kafka)."""
-        if not self._initialized or self.producer is None:
-            logger.debug("Kafka history not available, skipping")
-            return
-
-        try:
-            key = record.batch_id
-            value = record.to_dict()
-            self.producer.send(self.HISTORY_TOPIC, key=key, value=value)
-        except Exception as e:
-            logger.warning(f"Failed to write batch history to Kafka: {e}")
+        key = record.batch_id
+        value = record.to_dict()
+        self.producer.send(self.HISTORY_TOPIC, key=key, value=value)
 
     def flush(self):
         """Сбрасывает буфер."""
-        if self.producer:
-            self.producer.flush()
+        self.producer.flush()
 
     def close(self):
         """Закрывает соединение."""
-        if self.producer:
-            self.producer.close()
-
-    def get_stats(self) -> dict:
-        """Возвращает статус подключения."""
-        return {
-            "initialized": self._initialized,
-            "topic": self.HISTORY_TOPIC,
-        }
+        self.producer.close()
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +467,7 @@ class GeneratorService:
         self.dictionary = EventDictionary.load(config.data_dir)
         self.generator = EventGenerator(self.dictionary, config)
         self.publisher: KafkaPublisher | None = None
-        self.history: KafkaBatchHistory | InMemoryBatchHistory | None = None
+        self.history: KafkaBatchHistory | None = None
         self._running = False
 
     def start(self):
@@ -543,14 +485,9 @@ class GeneratorService:
                    f"lambda_base={self.config.lambda_base_per_min}/min, "
                    f"jitter={self.config.jitter_pct}%")
 
-        # Подключаемся к Kafka для публикации событий
+        # Подключаемся к Kafka для публикации событий и истории
         self.publisher = KafkaPublisher(self.config.kafka_bootstrap_servers)
-        
-        # Инициализируем историю (Kafka с fallback на in-memory)
         self.history = KafkaBatchHistory(self.config.kafka_bootstrap_servers)
-        if not self.history._initialized:
-            logger.warning("Falling back to InMemoryBatchHistory")
-            self.history = InMemoryBatchHistory()
 
         self._running = True
 
@@ -567,7 +504,7 @@ class GeneratorService:
         self._running = False
         if self.publisher:
             self.publisher.close()
-        if isinstance(self.history, KafkaBatchHistory):
+        if self.history:
             self.history.close()
 
     def _main_loop(self):
@@ -605,11 +542,6 @@ class GeneratorService:
                             total_sent += sent
                             total_errors += errors
 
-                    self.publisher.flush()
-                    if isinstance(self.history, KafkaBatchHistory):
-                        self.history.flush()
-                    pub_duration = time.time() - pub_start
-
                     # Определяем статус
                     if total_errors == 0:
                         status = "success"
@@ -622,7 +554,7 @@ class GeneratorService:
                     if status in ("success", "partial"):
                         METRICS_LAST_SUCCESS.set_to_current_time()
 
-                    # Сохраняем в историю
+                    # Сохраняем в историю (с fallback на in-memory при деградации Kafka)
                     batch_record = BatchRecord(
                         batch_id=batch_id,
                         started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
@@ -636,6 +568,11 @@ class GeneratorService:
                         error_message=None if status == "success" else f"Errors: {total_errors}",
                     )
                     self.history.add(batch_record)
+
+                    # Флашим публикацию и историю
+                    self.publisher.flush()
+                    self.history.flush()
+                    pub_duration = time.time() - pub_start
 
                     # Логируем результат
                     tick_duration = time.time() - tick_start
