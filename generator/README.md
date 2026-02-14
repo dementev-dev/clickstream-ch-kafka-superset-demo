@@ -107,17 +107,33 @@ LIMIT 10
 
 ## Тестирование
 
-### Локальные тесты
+Тесты написаны на **pytest**.
+
+### Запуск тестов
 
 ```bash
-# Сборка образа для тестов
+# Через Makefile (рекомендуется)
+make generator-test
+
+# С покрытием
+make generator-test-cov
+
+# Вручную через Docker
 docker build -t generator:test .
+docker run --rm -v $(PWD):/workspace -w /workspace/generator generator:test pytest tests/ -v
 
-# Базовые тесты
-docker run --rm -v $(pwd)/..:/workspace -w /workspace/generator generator:test python test_local.py
+# Конкретный файл тестов
+docker run --rm -v $(PWD):/workspace -w /workspace/generator generator:test pytest tests/test_generation.py -v
+```
 
-# Комплексные тесты
-docker run --rm -v $(pwd)/..:/workspace -w /workspace/generator generator:test python test_comprehensive.py
+### Структура тестов
+
+```
+generator/tests/
+├── conftest.py          # Fixtures pytest
+├── test_config.py       # Тесты конфигурации
+├── test_generation.py   # Тесты генерации событий
+└── test_history.py      # Тесты истории батчей
 ```
 
 ### Интеграционный тест

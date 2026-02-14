@@ -1,7 +1,8 @@
 .PHONY: up down clean ddl data transform logs \
         reload-monitoring recover-monitoring \
         superset-init superset-dashboard superset-ui superset-restart \
-        generator-up generator-down generator-logs generator-restart
+        generator-up generator-down generator-logs generator-restart \
+        generator-test generator-test-build
 
 COMPOSE ?= docker compose
 
@@ -106,3 +107,17 @@ generator-logs:
 # Перезапуск генератора с пересборкой
 generator-restart:
 	$(COMPOSE) up -d --build --force-recreate generator
+
+# Собрать тестовый образ генератора
+generator-test-build:
+	cd generator && docker build -t generator:test .
+
+# Запустить тесты генератора (pytest)
+generator-test: generator-test-build
+	@echo "=== Запуск тестов генератора ==="
+	docker run --rm -v $(PWD):/workspace -w /workspace/generator generator:test pytest tests/ -v
+
+# Запустить тесты с покрытием
+generator-test-cov: generator-test-build
+	@echo "=== Запуск тестов с покрытием ==="
+	docker run --rm -v $(PWD):/workspace -w /workspace/generator generator:test pytest tests/ -v --cov=. --cov-report=term-missing

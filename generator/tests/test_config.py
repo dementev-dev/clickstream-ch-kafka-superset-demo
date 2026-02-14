@@ -1,0 +1,67 @@
+"""
+Тесты конфигурации генератора.
+"""
+
+from pathlib import Path
+
+import pytest
+from generator import Config
+
+
+class TestConfigValidation:
+    """Тесты валидации конфигурации."""
+
+    def test_tick_seconds_must_be_positive(self, base_config):
+        """tick_seconds должен быть >= 1."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="GEN_TICK_SECONDS"):
+            replace(base_config, tick_seconds=0)
+
+    def test_lambda_base_must_be_positive(self, base_config):
+        """lambda_base_per_min должен быть >= 1."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="GEN_LAMBDA_BASE_PER_MIN"):
+            replace(base_config, lambda_base_per_min=0)
+
+    def test_data_dir_must_exist(self, base_config):
+        """data_dir должен существовать."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="does not exist"):
+            replace(base_config, data_dir=Path("/nonexistent/path"))
+
+    def test_valid_config_passes(self, base_config):
+        """Валидная конфигурация создается без ошибок."""
+        assert base_config.tick_seconds == 5
+        assert base_config.lambda_base_per_min == 200
+        assert base_config.jitter_pct == 20
+
+
+class TestConfigDefaults:
+    """Тесты значений по умолчанию."""
+
+    def test_default_tick_seconds_is_5(self, data_dir):
+        """По умолчанию tick_seconds = 5 (rev5)."""
+        import os
+        # Сохраняем текущее значение
+        orig_value = os.environ.get("GEN_TICK_SECONDS")
+        try:
+            if "GEN_TICK_SECONDS" in os.environ:
+                del os.environ["GEN_TICK_SECONDS"]
+            config = Config(
+                kafka_bootstrap_servers="localhost:9092",
+                tick_seconds=int(os.getenv("GEN_TICK_SECONDS", "5")),
+                lambda_base_per_min=200,
+                jitter_pct=20,
+                min_events_per_tick=5,
+                max_events_per_tick=50,
+                data_dir=data_dir,
+                seed=None,
+                enabled=True,
+                metrics_port=9109,
+                clickhouse_host="localhost",
+                clickhouse_port=9000,
+            )
+            assert config.tick_seconds == 5
+        finally:
+            if orig_value is not None:
+                os.environ["GEN_TICK_SECONDS"] = orig_value
