@@ -6,12 +6,10 @@
 держим целевую интенсивность events/min без крупных минутных batch.
 """
 
-import base64
 import json
 import logging
 import math
 import os
-import pickle
 import random
 import sys
 import time
@@ -368,25 +366,33 @@ class BatchRecord:
 # ---------------------------------------------------------------------------
 # State record для сохранения состояния генератора
 # ---------------------------------------------------------------------------
+def _nested_list_to_tuple(obj):
+    """Рекурсивно преобразует list в tuple (для восстановления RNG state после JSON)."""
+    if isinstance(obj, list):
+        return tuple(_nested_list_to_tuple(x) for x in obj)
+    return obj
+
+
 @dataclass
 class GeneratorState:
-    """Состояние генератора для восстановления после рестарта."""
+    """Состояние генератора для восстановления после рестарта.
+
+    Используем JSON-safe сериализацию:
+    - rng_state от random.getstate() - кортеж из простых типов (int, tuple),
+      безопасно сериализуется в JSON напрямую без pickle
+    """
 
     tick: int
-    rng_state: tuple  # результат random.getstate()
+    rng_state: tuple  # результат random.getstate() - JSON-serializable
     last_batch_id: str
     last_timestamp: datetime
     version: str = "1.0"
 
     def to_dict(self) -> dict:
-        """Конвертирует в словарь для сериализации."""
-        # Сериализуем rng_state через pickle + base64
-        rng_state_bytes = pickle.dumps(self.rng_state)
-        rng_state_b64 = base64.b64encode(rng_state_bytes).decode("utf-8")
-
+        """Конвертирует в словарь для JSON-сериализации."""
         return {
             "tick": self.tick,
-            "rng_state": rng_state_b64,
+            "rng_state": self.rng_state,  # tuple из int - JSON-serializable
             "last_batch_id": self.last_batch_id,
             "last_timestamp": self.last_timestamp.isoformat(),
             "version": self.version,
@@ -394,14 +400,10 @@ class GeneratorState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "GeneratorState":
-        """Создаёт состояние из словаря."""
-        # Десериализуем rng_state
-        rng_state_bytes = base64.b64decode(data["rng_state"])
-        rng_state = pickle.loads(rng_state_bytes)
-
+        """Создаёт состояние из словаря (JSON-only, без pickle)."""
         return cls(
             tick=data["tick"],
-            rng_state=rng_state,
+            rng_state=_nested_list_to_tuple(data["rng_state"]),  # рекурсивно list->tuple
             last_batch_id=data["last_batch_id"],
             last_timestamp=datetime.fromisoformat(data["last_timestamp"]),
             version=data.get("version", "1.0"),
@@ -445,7 +447,11 @@ class KafkaStateManager:
         self.producer.close()
 
     def load(self) -> GeneratorState | None:
-        """Загружает последнее состояние из топика."""
+        """Загружает последнее состояние из топика.
+
+        Для compact topic хранится только последнее значение для ключа,
+        поэтому читаем все сообщения и берём последнее с нужным ключом.
+        """
         from kafka import KafkaConsumer
 
         logger.info(f"Loading state from topic {self.STATE_TOPIC}")
@@ -480,43 +486,81 @@ class KafkaStateManager:
 
 
 # ---------------------------------------------------------------------------
+# Утилиты для работы с Kafka с retry/backoff
+# ---------------------------------------------------------------------------
+def _with_retry(operation, max_retries: int = 5, base_delay: float = 1.0, max_delay: float = 30.0):
+    """Выполняет операцию с экспоненциальным backoff и ограниченным числом попыток.
+
+    Args:
+        operation: функция для выполнения
+        max_retries: максимальное число попыток
+        base_delay: начальная задержка между попытками (сек)
+        max_delay: максимальная задержка между попытками (сек)
+
+    Returns:
+        результат операции
+
+    Raises:
+        последнее исключение после исчерпания попыток
+    """
+    import time
+
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                logger.warning(f"Operation failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+            else:
+                logger.error(f"Operation failed after {max_retries} attempts: {e}")
+                raise last_exception
+
+
+# ---------------------------------------------------------------------------
 # Создание топиков для истории и состояния
 # ---------------------------------------------------------------------------
 def ensure_topics(bootstrap_servers: str) -> None:
-    """Создаёт необходимые топики если они не существуют."""
+    """Создаёт необходимые топики если они не существуют (с retry на подключение)."""
     from kafka import KafkaAdminClient
     from kafka.admin import NewTopic
     from kafka.errors import TopicAlreadyExistsError
 
-    admin_client = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
-    try:
-        # Топик для истории батчей (обычный, с retention)
-        history_topic = NewTopic(
-            name=KafkaBatchHistory.HISTORY_TOPIC,
-            num_partitions=1,
-            replication_factor=1,
-        )
+    def _create_topics():
+        admin_client = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
+        try:
+            # Топик для истории батчей (обычный, с retention)
+            history_topic = NewTopic(
+                name=KafkaBatchHistory.HISTORY_TOPIC,
+                num_partitions=1,
+                replication_factor=1,
+            )
 
-        # Топик для состояния (compact - храним только последнее значение)
-        state_topic = NewTopic(
-            name=KafkaStateManager.STATE_TOPIC,
-            num_partitions=1,
-            replication_factor=1,
-            topic_configs={
-                "cleanup.policy": "compact",
-                "min.cleanable.dirty.ratio": "0.1",
-                "delete.retention.ms": "100",
-            },
-        )
+            # Топик для состояния (compact - храним только последнее значение)
+            state_topic = NewTopic(
+                name=KafkaStateManager.STATE_TOPIC,
+                num_partitions=1,
+                replication_factor=1,
+                topic_configs={
+                    "cleanup.policy": "compact",
+                    "min.cleanable.dirty.ratio": "0.1",
+                    "delete.retention.ms": "100",
+                },
+            )
 
-        for topic in [history_topic, state_topic]:
-            try:
-                admin_client.create_topics([topic])
-                logger.info(f"Created topic: {topic.name}")
-            except TopicAlreadyExistsError:
-                logger.debug(f"Topic already exists: {topic.name}")
-    finally:
-        admin_client.close()
+            for topic in [history_topic, state_topic]:
+                try:
+                    admin_client.create_topics([topic])
+                    logger.info(f"Created topic: {topic.name}")
+                except TopicAlreadyExistsError:
+                    logger.debug(f"Topic already exists: {topic.name}")
+        finally:
+            admin_client.close()
+
+    _with_retry(_create_topics, max_retries=5, base_delay=1.0)
 
 
 # ---------------------------------------------------------------------------

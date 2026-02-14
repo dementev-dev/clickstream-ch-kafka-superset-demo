@@ -1,8 +1,7 @@
 """
 Тесты сохранения и восстановления состояния генератора.
 """
-import base64
-import pickle
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -48,7 +47,7 @@ class TestGeneratorState:
         assert state.version == "1.0"
 
     def test_to_dict_serialization(self):
-        """Сериализация в словарь."""
+        """Сериализация в словарь (JSON-safe, без pickle)."""
         now = datetime.now(timezone.utc)
         rng_state = (3, (1, 2, 3), None)
 
@@ -66,13 +65,14 @@ class TestGeneratorState:
         assert data["last_timestamp"] == now.isoformat()
         assert data["version"] == "1.0"
 
-        # Проверяем что rng_state сериализован через pickle+base64
+        # Проверяем что rng_state сериализован как tuple (JSON-safe, без pickle)
         assert "rng_state" in data
-        assert isinstance(data["rng_state"], str)
-        # Проверяем что можно десериализовать
-        decoded = base64.b64decode(data["rng_state"])
-        restored_rng = pickle.loads(decoded)
-        assert restored_rng == rng_state
+        assert data["rng_state"] == rng_state
+        # Проверяем что можно сериализовать в JSON и восстановить
+        json_str = json.dumps(data)
+        restored_data = json.loads(json_str)
+        restored_state = GeneratorState.from_dict(restored_data)
+        assert restored_state.rng_state == rng_state
 
     def test_from_dict_deserialization(self):
         """Десериализация из словаря."""
@@ -289,3 +289,93 @@ class TestKafkaStateManager:
             manager.close()
 
             mock_producer.close.assert_called_once()
+
+
+class TestJsonSafeState:
+    """Тесты JSON-safe сериализации state (без pickle)."""
+
+    def test_json_roundtrip_with_nested_tuples(self):
+        """Проверка что nested tuple корректно восстанавливается после JSON."""
+        from generator import _nested_list_to_tuple
+        
+        # Симулируем что получаем после json.loads() - все tuple становятся list
+        json_loaded = [3, [1, 2, 3], None]
+        
+        result = _nested_list_to_tuple(json_loaded)
+        
+        assert result == (3, (1, 2, 3), None)
+        assert isinstance(result, tuple)
+        assert isinstance(result[1], tuple)
+
+    def test_json_roundtrip_rng_state(self):
+        """Полный цикл: rng.getstate() -> JSON -> from_dict -> setstate."""
+        import random
+        
+        rng = random.Random(42)
+        # Делаем несколько вызовов
+        values_before = [rng.random() for _ in range(10)]
+        
+        # Сохраняем state
+        state = GeneratorState(
+            tick=100,
+            rng_state=rng.getstate(),
+            last_batch_id="test123",
+            last_timestamp=datetime.now(timezone.utc),
+        )
+        
+        # Сериализуем через JSON (как в Kafka)
+        data = state.to_dict()
+        json_str = json.dumps(data)
+        restored_data = json.loads(json_str)
+        
+        # Восстанавливаем
+        restored_state = GeneratorState.from_dict(restored_data)
+        
+        # Проверяем что RNG state восстановлен корректно
+        rng2 = random.Random()
+        rng2.setstate(restored_state.rng_state)
+        
+        # Проверяем что следующие значения совпадают
+        values_after = [rng2.random() for _ in range(5)]
+        
+        # Оригинальный RNG должен дать те же значения
+        values_expected = [rng.random() for _ in range(5)]
+        
+        assert values_after == values_expected
+
+
+class TestWithRetry:
+    """Тесты функции _with_retry."""
+
+    def test_success_on_first_attempt(self):
+        """Успех с первой попытки."""
+        from generator import _with_retry
+        
+        operation = MagicMock(return_value="success")
+        
+        result = _with_retry(operation, max_retries=3, base_delay=0.01)
+        
+        assert result == "success"
+        assert operation.call_count == 1
+
+    def test_success_after_retries(self):
+        """Успех после нескольких попыток."""
+        from generator import _with_retry
+        
+        operation = MagicMock(side_effect=[Exception("fail1"), Exception("fail2"), "success"])
+        
+        result = _with_retry(operation, max_retries=3, base_delay=0.01)
+        
+        assert result == "success"
+        assert operation.call_count == 3
+
+    def test_failure_after_all_retries(self):
+        """Исчерпание всех попыток."""
+        from generator import _with_retry
+        
+        operation = MagicMock(side_effect=Exception("always fails"))
+        
+        with pytest.raises(Exception, match="always fails"):
+            _with_retry(operation, max_retries=3, base_delay=0.01)
+        
+        assert operation.call_count == 3
