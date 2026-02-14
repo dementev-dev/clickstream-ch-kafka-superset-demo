@@ -1,0 +1,8 @@
+# Kafka клиент
+kafka-python==2.0.5
+
+# ClickHouse драйвер (для будущей записи истории batch)
+clickhouse-connect==0.8.0
+
+# Утилиты
+python-json-logger==2.0.7

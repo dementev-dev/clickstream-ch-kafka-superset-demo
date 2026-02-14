@@ -1,6 +1,7 @@
 .PHONY: up down clean ddl data transform logs \
         reload-monitoring recover-monitoring \
-        superset-init superset-dashboard superset-ui superset-restart
+        superset-init superset-dashboard superset-ui superset-restart \
+        generator-up generator-down generator-logs generator-restart
 
 COMPOSE ?= docker compose
 
@@ -85,3 +86,23 @@ superset-ui:
 # Перезапуск Superset
 superset-restart:
 	$(COMPOSE) restart superset
+
+# ============================================================================
+# Генератор событий (автономный стриминг)
+# ============================================================================
+
+# Запустить только генератор (полезно для отладки)
+generator-up:
+	$(COMPOSE) up -d --build generator
+
+# Остановить генератор
+generator-down:
+	$(COMPOSE) stop generator
+
+# Логи генератора
+generator-logs:
+	$(COMPOSE) logs -f --tail=100 generator
+
+# Перезапуск генератора с пересборкой
+generator-restart:
+	$(COMPOSE) up -d --build --force-recreate generator
