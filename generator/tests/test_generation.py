@@ -168,23 +168,7 @@ class TestPoissonDistribution:
 class TestEmptyData:
     """Тесты обработки пустых данных."""
 
-    def test_empty_jsonl_handled(self, empty_temp_dir):
-        """Пустые JSONL файлы обрабатываются корректно."""
-        dictionary = EventDictionary.load(empty_temp_dir)
-
-        assert len(dictionary.browser_events) == 0
-        assert len(dictionary.location_events) == 0
-        assert len(dictionary.device_events) == 0
-        assert len(dictionary.geo_events) == 0
-
-    def test_generate_batch_with_empty_dict(self, empty_temp_dir, base_config):
-        """Генерация с пустым словарем (должна работать, но без событий)."""
-        from dataclasses import replace
-        dictionary = EventDictionary.load(empty_temp_dir)
-        config = replace(base_config, data_dir=empty_temp_dir)
-        generator = EventGenerator(dictionary, config)
-
-        # С пустым словарем генерация упадет при choice()
-        # Это ожидаемое поведение — проверяем что падает с IndexError
-        with pytest.raises(IndexError):
-            generator.generate_batch(1)
+    def test_empty_jsonl_raises_error(self, empty_temp_dir):
+        """Пустые JSONL файлы вызывают ValueError при загрузке."""
+        with pytest.raises(ValueError, match="browser_events.jsonl is empty"):
+            EventDictionary.load(empty_temp_dir)

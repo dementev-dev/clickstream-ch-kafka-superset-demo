@@ -132,10 +132,12 @@ docker run --rm -v $(PWD):/workspace -w /workspace/generator generator:test pyte
 
 ```
 generator/tests/
-├── conftest.py          # Fixtures pytest
-├── test_config.py       # Тесты конфигурации
-├── test_generation.py   # Тесты генерации событий
-└── test_history.py      # Тесты истории батчей
+├── conftest.py           # Fixtures pytest
+├── test_config.py        # Тесты конфигурации
+├── test_generation.py    # Тесты генерации событий
+├── test_history.py       # Тесты структуры BatchRecord
+├── test_kafka_history.py # Тесты KafkaBatchHistory
+└── test_service.py       # Тесты GeneratorService
 ```
 
 ### Интеграционный тест

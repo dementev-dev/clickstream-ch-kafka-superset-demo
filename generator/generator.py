@@ -174,11 +174,19 @@ class EventDictionary:
             logger.info(f"  Loaded {len(events)} events from {filename}")
             return events
 
+        browser_events = load_jsonl("browser_events.jsonl")
+        location_events = load_jsonl("location_events.jsonl")
+        device_events = load_jsonl("device_events.jsonl")
+        geo_events = load_jsonl("geo_events.jsonl")
+
+        if not browser_events:
+            raise ValueError("browser_events.jsonl is empty or missing")
+
         return cls(
-            browser_events=load_jsonl("browser_events.jsonl"),
-            location_events=load_jsonl("location_events.jsonl"),
-            device_events=load_jsonl("device_events.jsonl"),
-            geo_events=load_jsonl("geo_events.jsonl"),
+            browser_events=browser_events,
+            location_events=location_events,
+            device_events=device_events,
+            geo_events=geo_events,
         )
 
 
@@ -249,6 +257,15 @@ class EventGenerator:
 
         Возвращает словарь {topic: [events]}
         """
+        if not self.dictionary.browser_events:
+            logger.warning("Event dictionary is empty, skipping batch generation")
+            return {
+                "browser_events": [],
+                "location_events": [],
+                "device_events": [],
+                "geo_events": [],
+            }
+
         batch = {
             "browser_events": [],
             "location_events": [],
@@ -336,6 +353,30 @@ class BatchRecord:
             "status": self.status,
             "error_message": self.error_message,
         }
+
+
+# ---------------------------------------------------------------------------
+# Создание топика для истории
+# ---------------------------------------------------------------------------
+def ensure_history_topic(bootstrap_servers: str) -> None:
+    """Создаёт топик для истории батчей если он не существует."""
+    from kafka import KafkaAdminClient
+    from kafka.admin import NewTopic
+    from kafka.errors import TopicAlreadyExistsError
+
+    admin_client = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
+    try:
+        new_topic = NewTopic(
+            name=KafkaBatchHistory.HISTORY_TOPIC,
+            num_partitions=1,
+            replication_factor=1,
+        )
+        admin_client.create_topics([new_topic])
+        logger.info(f"Created topic: {KafkaBatchHistory.HISTORY_TOPIC}")
+    except TopicAlreadyExistsError:
+        logger.debug(f"Topic already exists: {KafkaBatchHistory.HISTORY_TOPIC}")
+    finally:
+        admin_client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +527,8 @@ class GeneratorService:
                    f"jitter={self.config.jitter_pct}%")
 
         # Подключаемся к Kafka для публикации событий и истории
+        # Сначала создаём топик для истории если нужно
+        ensure_history_topic(self.config.kafka_bootstrap_servers)
         self.publisher = KafkaPublisher(self.config.kafka_bootstrap_servers)
         self.history = KafkaBatchHistory(self.config.kafka_bootstrap_servers)
 
@@ -554,25 +597,29 @@ class GeneratorService:
                     if status in ("success", "partial"):
                         METRICS_LAST_SUCCESS.set_to_current_time()
 
-                    # Сохраняем в историю (с fallback на in-memory при деградации Kafka)
-                    batch_record = BatchRecord(
-                        batch_id=batch_id,
-                        started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
-                        finished_at=datetime.now(timezone.utc),
-                        sent_total=total_sent,
-                        sent_browser=sent_counts.get("browser_events", {}).get("sent", 0),
-                        sent_location=sent_counts.get("location_events", {}).get("sent", 0),
-                        sent_device=sent_counts.get("device_events", {}).get("sent", 0),
-                        sent_geo=sent_counts.get("geo_events", {}).get("sent", 0),
-                        status=status,
-                        error_message=None if status == "success" else f"Errors: {total_errors}",
-                    )
-                    self.history.add(batch_record)
-
-                    # Флашим публикацию и историю
+                    # Флашим публикацию событий
                     self.publisher.flush()
-                    self.history.flush()
                     pub_duration = time.time() - pub_start
+
+                    # Сохраняем в историю (best-effort: ошибки не валят тик)
+                    try:
+                        batch_record = BatchRecord(
+                            batch_id=batch_id,
+                            started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
+                            finished_at=datetime.now(timezone.utc),
+                            sent_total=total_sent,
+                            sent_browser=sent_counts.get("browser_events", {}).get("sent", 0),
+                            sent_location=sent_counts.get("location_events", {}).get("sent", 0),
+                            sent_device=sent_counts.get("device_events", {}).get("sent", 0),
+                            sent_geo=sent_counts.get("geo_events", {}).get("sent", 0),
+                            status=status,
+                            error_message=None if status == "success" else f"Errors: {total_errors}",
+                        )
+                        self.history.add(batch_record)
+                        self.history.flush()
+                    except Exception as hist_err:
+                        logger.warning(f"Failed to write batch history: {hist_err}")
+                        METRICS_ERRORS_TOTAL.labels(topic="history").inc()
 
                     # Логируем результат
                     tick_duration = time.time() - tick_start
@@ -589,20 +636,25 @@ class GeneratorService:
 
                 except Exception as e:
                     logger.exception(f"Error in tick {tick}: {e}")
-                    self.history.add(
-                        BatchRecord(
-                            batch_id=batch_id,
-                            started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
-                            finished_at=datetime.now(timezone.utc),
-                            sent_total=0,
-                            sent_browser=0,
-                            sent_location=0,
-                            sent_device=0,
-                            sent_geo=0,
-                            status="error",
-                            error_message=str(e),
+                    # Пытаемся записать ошибку в историю (best-effort)
+                    try:
+                        self.history.add(
+                            BatchRecord(
+                                batch_id=batch_id,
+                                started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
+                                finished_at=datetime.now(timezone.utc),
+                                sent_total=0,
+                                sent_browser=0,
+                                sent_location=0,
+                                sent_device=0,
+                                sent_geo=0,
+                                status="error",
+                                error_message=str(e),
+                            )
                         )
-                    )
+                        self.history.flush()
+                    except Exception as hist_err:
+                        logger.warning(f"Failed to write error to history: {hist_err}")
 
             # Ждём до следующего тика
             elapsed = time.time() - tick_start
