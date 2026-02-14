@@ -300,8 +300,6 @@ services:
       GEN_DATA_DIR: /data
       GEN_ENABLED: "true"
       GEN_METRICS_PORT: "9109"
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "9000"
       # PYTHONUNBUFFERED для сразу видеть логи
       PYTHONUNBUFFERED: "1"
     ports:
@@ -312,7 +310,6 @@ services:
       - cs_dwh
     depends_on:
       - kafka
-      - clickhouse
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]

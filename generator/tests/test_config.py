@@ -58,8 +58,7 @@ class TestConfigDefaults:
                 seed=None,
                 enabled=True,
                 metrics_port=9109,
-                clickhouse_host="localhost",
-                clickhouse_port=9000,
+                history_topic="generator_batch_history",
             )
             assert config.tick_seconds == 5
         finally:

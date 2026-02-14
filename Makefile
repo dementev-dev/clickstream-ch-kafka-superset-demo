@@ -2,7 +2,7 @@
         reload-monitoring recover-monitoring \
         superset-init superset-dashboard superset-ui superset-restart \
         generator-up generator-down generator-logs generator-restart \
-        generator-test generator-test-build
+        generator-test generator-test-build generator-test-cov
 
 COMPOSE ?= docker compose
 

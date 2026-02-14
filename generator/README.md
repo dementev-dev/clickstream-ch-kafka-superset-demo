@@ -36,8 +36,6 @@ generator-service -> Kafka topics -> (потребители отдельно)
 | `GEN_SEED` | Сид для воспроизводимости | — |
 | `GEN_ENABLED` | Включить генерацию | `true` |
 | `GEN_METRICS_PORT` | Порт для Prometheus | `9109` |
-| `CLICKHOUSE_HOST` | Хост ClickHouse для истории | `clickhouse` |
-| `CLICKHOUSE_PORT` | Порт ClickHouse | `9000` |
 
 ### Режим "раз в минуту" (для демо)
 
@@ -62,6 +60,9 @@ make generator-logs
 
 # Перезапуск с пересборкой
 make generator-restart
+
+# Запуск тестов
+make generator-test
 ```
 
 ## Метрики Prometheus
@@ -84,26 +85,24 @@ curl http://localhost:9090/api/v1/targets | grep generator
 
 ## История batch
 
-История сохраняется в таблице `meta.generator_batches` (ClickHouse):
+История пишется в Kafka-топик `generator_batch_history` (JSON). При недоступности Kafka используется in-memory fallback (последние 1000 записей).
 
-```sql
-SELECT 
-    batch_id,
-    started_at,
-    sent_total,
-    status
-FROM meta.generator_batches
-ORDER BY started_at DESC
-LIMIT 10
-```
-
-Поля:
+Поля сообщения:
 - `batch_id` — идентификатор батча
-- `started_at` / `finished_at` — время начала/окончания
+- `started_at` / `finished_at` — время начала/окончания (ISO format)
 - `sent_total` — всего отправлено
 - `sent_browser/location/device/geo` — по топикам
 - `status` — success/partial/error
 - `error_message` — описание ошибки (если есть)
+
+### Чтение истории из Kafka
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic generator_batch_history \
+  --from-beginning
+```
 
 ## Тестирование
 
@@ -114,9 +113,6 @@ LIMIT 10
 ```bash
 # Через Makefile (рекомендуется)
 make generator-test
-
-# С покрытием
-make generator-test-cov
 
 # Вручную через Docker
 docker build -t generator:test .

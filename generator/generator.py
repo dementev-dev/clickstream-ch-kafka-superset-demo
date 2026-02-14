@@ -122,12 +122,9 @@ class Config:
         default_factory=lambda: int(os.getenv("GEN_METRICS_PORT", "9109"))
     )
 
-    # ClickHouse для истории batch
-    clickhouse_host: str = field(
-        default_factory=lambda: os.getenv("CLICKHOUSE_HOST", "clickhouse")
-    )
-    clickhouse_port: int = field(
-        default_factory=lambda: int(os.getenv("CLICKHOUSE_PORT", "9000"))
+    # Топик для истории batch
+    history_topic: str = field(
+        default_factory=lambda: os.getenv("GEN_HISTORY_TOPIC", "generator_batch_history")
     )
 
     def __post_init__(self):
@@ -313,7 +310,7 @@ class EventGenerator:
 
 
 # ---------------------------------------------------------------------------
-# Batch history в ClickHouse
+# Batch record для истории
 # ---------------------------------------------------------------------------
 @dataclass
 class BatchRecord:
@@ -330,111 +327,20 @@ class BatchRecord:
     status: str  # 'success', 'partial', 'error'
     error_message: str | None = None
 
-
-class ClickHouseBatchHistory:
-    """Хранение истории batch в ClickHouse."""
-
-    def __init__(self, host: str, port: int):
-        self.host = host
-        self.port = port
-        self._client = None
-        self._initialized = False
-
-    def _get_client(self):
-        """Lazy инициализация клиента ClickHouse."""
-        if self._client is None:
-            try:
-                import clickhouse_connect
-                self._client = clickhouse_connect.get_client(
-                    host=self.host,
-                    port=self.port,
-                    username="default",
-                    password="123456",
-                    database="default"
-                )
-                self._ensure_table()
-                self._initialized = True
-            except Exception as e:
-                logger.warning(f"Failed to connect to ClickHouse: {e}")
-                self._initialized = False
-        return self._client
-
-    def _ensure_table(self):
-        """Создаёт таблицу для истории batch если не существует."""
-        try:
-            self._client.command("""
-                CREATE TABLE IF NOT EXISTS meta.generator_batches (
-                    batch_id String,
-                    started_at DateTime64(6),
-                    finished_at DateTime64(6),
-                    sent_total Int32,
-                    sent_browser Int32,
-                    sent_location Int32,
-                    sent_device Int32,
-                    sent_geo Int32,
-                    status String,
-                    error_message Nullable(String)
-                ) ENGINE = MergeTree()
-                ORDER BY (started_at, batch_id)
-            """)
-            logger.info("ClickHouse table meta.generator_batches ready")
-        except Exception as e:
-            logger.warning(f"Failed to create table: {e}")
-
-    def add(self, record: BatchRecord):
-        """Добавляет запись в историю."""
-        client = self._get_client()
-        if client is None or not self._initialized:
-            logger.debug("ClickHouse not available, skipping batch history")
-            return
-
-        try:
-            client.insert(
-                "meta.generator_batches",
-                [[
-                    record.batch_id,
-                    record.started_at,
-                    record.finished_at,
-                    record.sent_total,
-                    record.sent_browser,
-                    record.sent_location,
-                    record.sent_device,
-                    record.sent_geo,
-                    record.status,
-                    record.error_message
-                ]],
-                columns=[
-                    "batch_id", "started_at", "finished_at", "sent_total",
-                    "sent_browser", "sent_location", "sent_device", "sent_geo",
-                    "status", "error_message"
-                ]
-            )
-        except Exception as e:
-            logger.warning(f"Failed to write batch history: {e}")
-
-    def get_stats(self) -> dict:
-        """Возвращает статистику по истории."""
-        client = self._get_client()
-        if client is None or not self._initialized:
-            return {"error": "ClickHouse not available"}
-
-        try:
-            result = client.query("""
-                SELECT 
-                    count() as total_batches,
-                    sumIf(1, status = 'success') as success_count,
-                    max(started_at) as last_batch
-                FROM meta.generator_batches
-            """)
-            row = result.result_rows[0]
-            return {
-                "total_batches": row[0],
-                "success_rate": row[1] / row[0] if row[0] > 0 else 0,
-                "last_batch": row[2]
-            }
-        except Exception as e:
-            logger.warning(f"Failed to get stats: {e}")
-            return {"error": str(e)}
+    def to_dict(self) -> dict:
+        """Конвертирует в словарь для сериализации."""
+        return {
+            "batch_id": self.batch_id,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat(),
+            "sent_total": self.sent_total,
+            "sent_browser": self.sent_browser,
+            "sent_location": self.sent_location,
+            "sent_device": self.sent_device,
+            "sent_geo": self.sent_geo,
+            "status": self.status,
+            "error_message": self.error_message,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +366,70 @@ class InMemoryBatchHistory:
             "total_batches": total,
             "success_rate": success / total if total > 0 else 0,
             "last_batch_status": self.batches[-1].status if self.batches else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Kafka history - пишет историю в отдельный топик
+# ---------------------------------------------------------------------------
+class KafkaBatchHistory:
+    """Хранение истории batch в Kafka (отдельный топик)."""
+
+    HISTORY_TOPIC = "generator_batch_history"
+
+    def __init__(self, bootstrap_servers: str):
+        self.bootstrap_servers = bootstrap_servers
+        self.producer = None
+        self._initialized = False
+        self._connect()
+
+    def _connect(self):
+        """Устанавливает соединение с Kafka."""
+        KafkaProducerCls, KafkaErrorCls = _import_kafka()
+
+        logger.info(f"Connecting to Kafka for history at {self.bootstrap_servers}")
+        try:
+            self.producer = KafkaProducerCls(
+                bootstrap_servers=self.bootstrap_servers,
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                key_serializer=lambda k: k.encode("utf-8") if k else None,
+                retries=3,
+                retry_backoff_ms=1000,
+            )
+            self._initialized = True
+            logger.info("Connected to Kafka for history successfully")
+        except Exception as e:
+            logger.warning(f"Failed to connect to Kafka for history: {e}")
+            self._initialized = False
+
+    def add(self, record: BatchRecord):
+        """Добавляет запись в историю (топик Kafka)."""
+        if not self._initialized or self.producer is None:
+            logger.debug("Kafka history not available, skipping")
+            return
+
+        try:
+            key = record.batch_id
+            value = record.to_dict()
+            self.producer.send(self.HISTORY_TOPIC, key=key, value=value)
+        except Exception as e:
+            logger.warning(f"Failed to write batch history to Kafka: {e}")
+
+    def flush(self):
+        """Сбрасывает буфер."""
+        if self.producer:
+            self.producer.flush()
+
+    def close(self):
+        """Закрывает соединение."""
+        if self.producer:
+            self.producer.close()
+
+    def get_stats(self) -> dict:
+        """Возвращает статус подключения."""
+        return {
+            "initialized": self._initialized,
+            "topic": self.HISTORY_TOPIC,
         }
 
 
@@ -555,8 +525,7 @@ class GeneratorService:
         self.dictionary = EventDictionary.load(config.data_dir)
         self.generator = EventGenerator(self.dictionary, config)
         self.publisher: KafkaPublisher | None = None
-        # Пробуем ClickHouse, если не доступен - используем in-memory
-        self.history = ClickHouseBatchHistory(config.clickhouse_host, config.clickhouse_port)
+        self.history: KafkaBatchHistory | InMemoryBatchHistory | None = None
         self._running = False
 
     def start(self):
@@ -574,7 +543,15 @@ class GeneratorService:
                    f"lambda_base={self.config.lambda_base_per_min}/min, "
                    f"jitter={self.config.jitter_pct}%")
 
+        # Подключаемся к Kafka для публикации событий
         self.publisher = KafkaPublisher(self.config.kafka_bootstrap_servers)
+        
+        # Инициализируем историю (Kafka с fallback на in-memory)
+        self.history = KafkaBatchHistory(self.config.kafka_bootstrap_servers)
+        if not self.history._initialized:
+            logger.warning("Falling back to InMemoryBatchHistory")
+            self.history = InMemoryBatchHistory()
+
         self._running = True
 
         try:
@@ -590,6 +567,8 @@ class GeneratorService:
         self._running = False
         if self.publisher:
             self.publisher.close()
+        if isinstance(self.history, KafkaBatchHistory):
+            self.history.close()
 
     def _main_loop(self):
         """Основной цикл тиков."""
@@ -627,6 +606,8 @@ class GeneratorService:
                             total_errors += errors
 
                     self.publisher.flush()
+                    if isinstance(self.history, KafkaBatchHistory):
+                        self.history.flush()
                     pub_duration = time.time() - pub_start
 
                     # Определяем статус
