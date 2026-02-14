@@ -28,3 +28,12 @@ scrape_configs:
         labels:
           instance: Airflow-1
     honor_labels: true
+
+  # Generator metrics (custom events generator)
+  - job_name: "generator"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["generator:9109"]
+        labels:
+          instance: Generator-1
+    honor_labels: true

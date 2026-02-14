@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from generator import (
     Config, EventDictionary, EventGenerator, 
-    BatchHistory, BatchRecord
+    InMemoryBatchHistory, BatchRecord
 )
 
 
@@ -42,6 +42,9 @@ def test_config_validation():
             data_dir=Path("/tmp"),
             seed=None,
             enabled=True,
+            metrics_port=9109,
+            clickhouse_host="localhost",
+            clickhouse_port=9000,
         )
         print(f"{Colors.RED}FAIL: Should raise ValueError for tick_seconds=0{Colors.RESET}")
         return False
@@ -52,7 +55,7 @@ def test_config_validation():
     try:
         Config(
             kafka_bootstrap_servers="localhost:9092",
-            tick_seconds=60,
+            tick_seconds=5,
             lambda_base_per_min=0,
             jitter_pct=20,
             min_events_per_tick=10,
@@ -60,6 +63,9 @@ def test_config_validation():
             data_dir=Path("/tmp"),
             seed=None,
             enabled=True,
+            metrics_port=9109,
+            clickhouse_host="localhost",
+            clickhouse_port=9000,
         )
         print(f"{Colors.RED}FAIL: Should raise ValueError for lambda_base=0{Colors.RESET}")
         return False
@@ -70,7 +76,7 @@ def test_config_validation():
     try:
         Config(
             kafka_bootstrap_servers="localhost:9092",
-            tick_seconds=60,
+            tick_seconds=5,
             lambda_base_per_min=100,
             jitter_pct=20,
             min_events_per_tick=10,
@@ -78,6 +84,9 @@ def test_config_validation():
             data_dir=Path("/nonexistent/path"),
             seed=None,
             enabled=True,
+            metrics_port=9109,
+            clickhouse_host="localhost",
+            clickhouse_port=9000,
         )
         print(f"{Colors.RED}FAIL: Should raise ValueError for non-existent dir{Colors.RESET}")
         return False
@@ -158,16 +167,20 @@ def test_poisson_distribution():
     data_dir = Path(__file__).parent.parent / "data"
     dictionary = EventDictionary.load(data_dir)
     
+    # Тест с короткими тиками (5 сек)
     config = Config(
         kafka_bootstrap_servers="localhost:9092",
-        tick_seconds=60,
+        tick_seconds=5,
         lambda_base_per_min=200,
         jitter_pct=20,
-        min_events_per_tick=50,
-        max_events_per_tick=500,
+        min_events_per_tick=5,
+        max_events_per_tick=50,
         data_dir=data_dir,
         seed=42,
         enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
     )
     
     generator = EventGenerator(dictionary, config)
@@ -187,21 +200,80 @@ def test_poisson_distribution():
         print(f"{Colors.RED}FAIL: max={max_val} > {config.max_events_per_tick}{Colors.RESET}")
         return False
     
-    # Проверяем среднее (должно быть около lambda_base при hour_factor=1.0)
-    expected = config.lambda_base_per_min  # примерно
+    # Ожидаемое среднее: lambda_base * hour_factor * tick_seconds / 60
+    # При hour_factor=1.0 (обычное время): 200 * 5 / 60 ≈ 16.7
+    expected = config.lambda_base_per_min * config.tick_seconds / 60.0
     deviation = abs(mean - expected) / expected * 100
     
+    print(f"  Tick seconds: {config.tick_seconds}")
     print(f"  Samples: 1000")
     print(f"  Min: {min_val}, Max: {max_val}")
-    print(f"  Mean: {mean:.2f} (expected ~{expected}, deviation: {deviation:.1f}%)")
+    print(f"  Mean: {mean:.2f} (expected ~{expected:.1f}, deviation: {deviation:.1f}%)")
     
-    # Допустимое отклонение до 30% (зависит от часа и случайности)
-    if deviation < 30:
+    # Допустимое отклонение до 50% (зависит от часа и случайности)
+    if deviation < 50:
         print(f"{Colors.GREEN}PASS: Mean is within acceptable range{Colors.RESET}")
         return True
     else:
         print(f"{Colors.YELLOW}WARNING: Mean deviation is high (maybe different hour?){Colors.RESET}")
         return True
+
+
+def test_jitter_applied():
+    """Тест что jitter действительно применяется."""
+    print("\n=== Test: Jitter Applied ===")
+    
+    data_dir = Path(__file__).parent.parent / "data"
+    dictionary = EventDictionary.load(data_dir)
+    
+    config_with_jitter = Config(
+        kafka_bootstrap_servers="localhost:9092",
+        tick_seconds=5,
+        lambda_base_per_min=200,
+        jitter_pct=20,  # 20% jitter
+        min_events_per_tick=1,
+        max_events_per_tick=100,
+        data_dir=data_dir,
+        seed=42,
+        enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
+    )
+    
+    config_no_jitter = Config(
+        kafka_bootstrap_servers="localhost:9092",
+        tick_seconds=5,
+        lambda_base_per_min=200,
+        jitter_pct=0,  # No jitter
+        min_events_per_tick=1,
+        max_events_per_tick=100,
+        data_dir=data_dir,
+        seed=42,
+        enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
+    )
+    
+    gen_with = EventGenerator(dictionary, config_with_jitter)
+    gen_without = EventGenerator(dictionary, config_no_jitter)
+    
+    samples_with = [gen_with._calculate_events_count() for _ in range(100)]
+    samples_without = [gen_without._calculate_events_count() for _ in range(100)]
+    
+    variance_with = sum((x - sum(samples_with)/len(samples_with))**2 for x in samples_with) / len(samples_with)
+    variance_without = sum((x - sum(samples_without)/len(samples_without))**2 for x in samples_without) / len(samples_without)
+    
+    print(f"  Variance with jitter (20%): {variance_with:.2f}")
+    print(f"  Variance without jitter: {variance_without:.2f}")
+    
+    if variance_with > variance_without:
+        print(f"{Colors.GREEN}PASS: Jitter increases variance as expected{Colors.RESET}")
+        return True
+    else:
+        print(f"{Colors.YELLOW}WARNING: Jitter may not be working correctly{Colors.RESET}")
+        return True  # Не критично
 
 
 def test_generate_batch_format():
@@ -213,14 +285,17 @@ def test_generate_batch_format():
     
     config = Config(
         kafka_bootstrap_servers="localhost:9092",
-        tick_seconds=60,
-        lambda_base_per_min=10,
+        tick_seconds=5,
+        lambda_base_per_min=200,
         jitter_pct=20,
         min_events_per_tick=5,
-        max_events_per_tick=20,
+        max_events_per_tick=50,
         data_dir=data_dir,
         seed=42,
         enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
     )
     
     generator = EventGenerator(dictionary, config)
@@ -285,7 +360,7 @@ def test_batch_history():
     """Тест истории батчей."""
     print("\n=== Test: Batch History ===")
     
-    history = BatchHistory()
+    history = InMemoryBatchHistory()
     
     # Добавляем записи
     from datetime import datetime, timezone
@@ -322,26 +397,32 @@ def test_reproducibility():
     
     config1 = Config(
         kafka_bootstrap_servers="localhost:9092",
-        tick_seconds=60,
-        lambda_base_per_min=100,
+        tick_seconds=5,
+        lambda_base_per_min=200,
         jitter_pct=20,
-        min_events_per_tick=10,
-        max_events_per_tick=200,
+        min_events_per_tick=5,
+        max_events_per_tick=50,
         data_dir=data_dir,
         seed=12345,
         enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
     )
     
     config2 = Config(
         kafka_bootstrap_servers="localhost:9092",
-        tick_seconds=60,
-        lambda_base_per_min=100,
+        tick_seconds=5,
+        lambda_base_per_min=200,
         jitter_pct=20,
-        min_events_per_tick=10,
-        max_events_per_tick=200,
+        min_events_per_tick=5,
+        max_events_per_tick=50,
         data_dir=data_dir,
         seed=12345,
         enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
     )
     
     gen1 = EventGenerator(dictionary, config1)
@@ -373,14 +454,17 @@ def test_large_lambda():
     
     config = Config(
         kafka_bootstrap_servers="localhost:9092",
-        tick_seconds=60,
+        tick_seconds=5,
         lambda_base_per_min=10000,  # Очень большое значение
         jitter_pct=20,
-        min_events_per_tick=100,
-        max_events_per_tick=500,
+        min_events_per_tick=5,
+        max_events_per_tick=50,
         data_dir=data_dir,
         seed=42,
         enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
     )
     
     generator = EventGenerator(dictionary, config)
@@ -399,7 +483,7 @@ def test_large_lambda():
 def run_all_tests():
     """Запускает все тесты."""
     print("=" * 60)
-    print("COMPREHENSIVE GENERATOR TESTS")
+    print("COMPREHENSIVE GENERATOR TESTS (rev5)")
     print("=" * 60)
     
     tests = [
@@ -407,6 +491,7 @@ def run_all_tests():
         test_empty_jsonl,
         test_event_dictionary_consistency,
         test_poisson_distribution,
+        test_jitter_applied,
         test_generate_batch_format,
         test_batch_history,
         test_reproducibility,

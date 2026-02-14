@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Автономный генератор событий для Kafka (MVP).
+Автономный генератор событий для Kafka (MVP rev5).
 
-Режим 'steady': каждую минуту публикуем фиксированный объём событий
-с небольшой вариативностью (Poisson + jitter).
+Режим 'steady-stream': публикуем постепенно, короткими тиками (1-10 сек),
+держим целевую интенсивность events/min без крупных минутных batch.
 """
 
 import json
 import logging
+import math
 import os
 import random
 import sys
@@ -18,8 +19,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
+# Prometheus метрики
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
+
+# Kafka импортируем lazy для возможности тестирования без Kafka
+_kafka_imported = False
+KafkaProducer = None
+KafkaError = None
+
+
+def _import_kafka():
+    global _kafka_imported, KafkaProducer, KafkaError
+    if not _kafka_imported:
+        from kafka import KafkaProducer
+        from kafka.errors import KafkaError
+        _kafka_imported = True
+    return KafkaProducer, KafkaError
+
 
 # ---------------------------------------------------------------------------
 # Настройка логирования
@@ -30,6 +46,29 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("generator")
+
+
+# ---------------------------------------------------------------------------
+# Prometheus метрики
+# ---------------------------------------------------------------------------
+METRICS_EVENTS_TOTAL = Counter(
+    "generator_events_total",
+    "Total number of events sent to Kafka",
+    ["topic"]
+)
+METRICS_ERRORS_TOTAL = Counter(
+    "generator_publish_errors_total",
+    "Total number of publish errors",
+    ["topic"]
+)
+METRICS_TICK_DURATION = Histogram(
+    "generator_tick_duration_seconds",
+    "Duration of generator tick in seconds"
+)
+METRICS_LAST_SUCCESS = Gauge(
+    "generator_last_success_timestamp",
+    "Unix timestamp of last successful tick"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +85,7 @@ class Config:
 
     # Параметры генерации
     tick_seconds: int = field(
-        default_factory=lambda: int(os.getenv("GEN_TICK_SECONDS", "60"))
+        default_factory=lambda: int(os.getenv("GEN_TICK_SECONDS", "5"))
     )
     lambda_base_per_min: int = field(
         default_factory=lambda: int(os.getenv("GEN_LAMBDA_BASE_PER_MIN", "200"))
@@ -55,10 +94,10 @@ class Config:
         default_factory=lambda: int(os.getenv("GEN_JITTER_PCT", "20"))
     )
     min_events_per_tick: int = field(
-        default_factory=lambda: int(os.getenv("GEN_MIN_EVENTS_PER_TICK", "50"))
+        default_factory=lambda: int(os.getenv("GEN_MIN_EVENTS_PER_TICK", "5"))
     )
     max_events_per_tick: int = field(
-        default_factory=lambda: int(os.getenv("GEN_MAX_EVENTS_PER_TICK", "500"))
+        default_factory=lambda: int(os.getenv("GEN_MAX_EVENTS_PER_TICK", "50"))
     )
 
     # Пути к данным
@@ -78,7 +117,12 @@ class Config:
         default_factory=lambda: os.getenv("GEN_ENABLED", "true").lower() == "true"
     )
 
-    # История batch (ClickHouse)
+    # Порт для Prometheus метрик
+    metrics_port: int = field(
+        default_factory=lambda: int(os.getenv("GEN_METRICS_PORT", "9109"))
+    )
+
+    # ClickHouse для истории batch
     clickhouse_host: str = field(
         default_factory=lambda: os.getenv("CLICKHOUSE_HOST", "clickhouse")
     )
@@ -170,7 +214,7 @@ class EventGenerator:
         hour = datetime.now(timezone.utc).hour
         # Дневное окно (9-18): 1.2
         # Ночное окно (0-5): 0.7
-        # Остальное: 1.0
+        # Остальное время: 1.0
         if 9 <= hour <= 18:
             return 1.2
         elif 0 <= hour <= 5:
@@ -178,17 +222,14 @@ class EventGenerator:
         return 1.0
 
     def _calculate_events_count(self) -> int:
-        """Вычисляет количество событий для текущего тика (Poisson + ограничения)."""
-        import math
-
+        """Вычисляет количество событий для текущего тика (Poisson + jitter)."""
         # Базовая интенсивность с учётом часа
-        lambda_t = self.config.lambda_base_per_min * self._hour_factor()
+        lambda_minute = self.config.lambda_base_per_min * self._hour_factor()
 
         # Масштабируем на длительность тика
-        lambda_tick = lambda_t * (self.config.tick_seconds / 60.0)
+        lambda_tick = lambda_minute * (self.config.tick_seconds / 60.0)
 
         # Генерируем Poisson
-        # Используем numpy-style подход через exponential
         count = 0
         L = math.exp(-lambda_tick)
         p = 1.0
@@ -196,6 +237,14 @@ class EventGenerator:
             p *= self.rng.random()
             count += 1
         count -= 1
+
+        # Применяем jitter (вариативность)
+        if self.config.jitter_pct > 0:
+            jitter_factor = 1.0 + self.rng.uniform(
+                -self.config.jitter_pct / 100.0,
+                self.config.jitter_pct / 100.0
+            )
+            count = int(count * jitter_factor)
 
         # Применяем границы
         count = max(self.config.min_events_per_tick, min(count, self.config.max_events_per_tick))
@@ -264,7 +313,7 @@ class EventGenerator:
 
 
 # ---------------------------------------------------------------------------
-# Batch history (мета-информация)
+# Batch history в ClickHouse
 # ---------------------------------------------------------------------------
 @dataclass
 class BatchRecord:
@@ -282,20 +331,127 @@ class BatchRecord:
     error_message: str | None = None
 
 
-class BatchHistory:
-    """Хранение истории batch (пока в памяти, потом в ClickHouse)."""
+class ClickHouseBatchHistory:
+    """Хранение истории batch в ClickHouse."""
+
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self._client = None
+        self._initialized = False
+
+    def _get_client(self):
+        """Lazy инициализация клиента ClickHouse."""
+        if self._client is None:
+            try:
+                import clickhouse_connect
+                self._client = clickhouse_connect.get_client(
+                    host=self.host,
+                    port=self.port,
+                    username="default",
+                    password="123456",
+                    database="default"
+                )
+                self._ensure_table()
+                self._initialized = True
+            except Exception as e:
+                logger.warning(f"Failed to connect to ClickHouse: {e}")
+                self._initialized = False
+        return self._client
+
+    def _ensure_table(self):
+        """Создаёт таблицу для истории batch если не существует."""
+        try:
+            self._client.command("""
+                CREATE TABLE IF NOT EXISTS meta.generator_batches (
+                    batch_id String,
+                    started_at DateTime64(6),
+                    finished_at DateTime64(6),
+                    sent_total Int32,
+                    sent_browser Int32,
+                    sent_location Int32,
+                    sent_device Int32,
+                    sent_geo Int32,
+                    status String,
+                    error_message Nullable(String)
+                ) ENGINE = MergeTree()
+                ORDER BY (started_at, batch_id)
+            """)
+            logger.info("ClickHouse table meta.generator_batches ready")
+        except Exception as e:
+            logger.warning(f"Failed to create table: {e}")
+
+    def add(self, record: BatchRecord):
+        """Добавляет запись в историю."""
+        client = self._get_client()
+        if client is None or not self._initialized:
+            logger.debug("ClickHouse not available, skipping batch history")
+            return
+
+        try:
+            client.insert(
+                "meta.generator_batches",
+                [[
+                    record.batch_id,
+                    record.started_at,
+                    record.finished_at,
+                    record.sent_total,
+                    record.sent_browser,
+                    record.sent_location,
+                    record.sent_device,
+                    record.sent_geo,
+                    record.status,
+                    record.error_message
+                ]],
+                columns=[
+                    "batch_id", "started_at", "finished_at", "sent_total",
+                    "sent_browser", "sent_location", "sent_device", "sent_geo",
+                    "status", "error_message"
+                ]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write batch history: {e}")
+
+    def get_stats(self) -> dict:
+        """Возвращает статистику по истории."""
+        client = self._get_client()
+        if client is None or not self._initialized:
+            return {"error": "ClickHouse not available"}
+
+        try:
+            result = client.query("""
+                SELECT 
+                    count() as total_batches,
+                    sumIf(1, status = 'success') as success_count,
+                    max(started_at) as last_batch
+                FROM meta.generator_batches
+            """)
+            row = result.result_rows[0]
+            return {
+                "total_batches": row[0],
+                "success_rate": row[1] / row[0] if row[0] > 0 else 0,
+                "last_batch": row[2]
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get stats: {e}")
+            return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# In-memory fallback для истории
+# ---------------------------------------------------------------------------
+class InMemoryBatchHistory:
+    """Fallback хранение истории batch в памяти."""
 
     def __init__(self):
         self.batches: list[BatchRecord] = []
 
     def add(self, record: BatchRecord):
         self.batches.append(record)
-        # Храним последние 1000 batch
         if len(self.batches) > 1000:
             self.batches = self.batches[-1000:]
 
     def get_stats(self) -> dict:
-        """Возвращает статистику по истории."""
         if not self.batches:
             return {}
         total = len(self.batches)
@@ -315,25 +471,26 @@ class KafkaPublisher:
 
     def __init__(self, bootstrap_servers: str):
         self.bootstrap_servers = bootstrap_servers
-        self.producer: KafkaProducer | None = None
+        self.producer = None
         self._connect()
 
     def _connect(self):
         """Устанавливает соединение с Kafka."""
+        KafkaProducerCls, KafkaErrorCls = _import_kafka()
+        
         logger.info(f"Connecting to Kafka at {self.bootstrap_servers}")
         try:
-            self.producer = KafkaProducer(
+            self.producer = KafkaProducerCls(
                 bootstrap_servers=self.bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
                 key_serializer=lambda k: k.encode("utf-8") if k else None,
-                # Небольшая буферизация для производительности
                 batch_size=16384,
                 linger_ms=100,
                 retries=3,
                 retry_backoff_ms=1000,
             )
             logger.info("Connected to Kafka successfully")
-        except KafkaError as e:
+        except KafkaErrorCls as e:
             logger.error(f"Failed to connect to Kafka: {e}")
             raise
 
@@ -347,28 +504,32 @@ class KafkaPublisher:
         if not self.producer:
             raise RuntimeError("Producer not connected")
 
+        _, KafkaErrorCls = _import_kafka()
+        
         sent = 0
         errors = 0
         futures = []
 
         for event in events:
-            # Используем event_id или click_id как ключ для партиционирования
             key = event.get("event_id") or event.get("click_id")
             try:
                 future = self.producer.send(topic, key=key, value=event)
                 futures.append(future)
-            except KafkaError as e:
+            except Exception as e:
                 logger.error(f"Failed to send message to {topic}: {e}")
                 errors += 1
+                METRICS_ERRORS_TOTAL.labels(topic=topic).inc()
 
         # Ждём подтверждений
         for future in futures:
             try:
                 future.get(timeout=10)
                 sent += 1
-            except KafkaError as e:
+                METRICS_EVENTS_TOTAL.labels(topic=topic).inc()
+            except Exception as e:
                 logger.error(f"Failed to confirm message delivery: {e}")
                 errors += 1
+                METRICS_ERRORS_TOTAL.labels(topic=topic).inc()
 
         return sent, errors
 
@@ -394,7 +555,8 @@ class GeneratorService:
         self.dictionary = EventDictionary.load(config.data_dir)
         self.generator = EventGenerator(self.dictionary, config)
         self.publisher: KafkaPublisher | None = None
-        self.history = BatchHistory()
+        # Пробуем ClickHouse, если не доступен - используем in-memory
+        self.history = ClickHouseBatchHistory(config.clickhouse_host, config.clickhouse_port)
         self._running = False
 
     def start(self):
@@ -403,9 +565,13 @@ class GeneratorService:
             logger.warning("Generator is disabled (GEN_ENABLED=false)")
             return
 
+        # Запускаем HTTP-сервер для Prometheus метрик
+        logger.info(f"Starting metrics server on port {self.config.metrics_port}")
+        start_http_server(self.config.metrics_port)
+
         logger.info("Starting generator service...")
         logger.info(f"Configuration: tick={self.config.tick_seconds}s, "
-                   f"lambda_base={self.config.lambda_base_per_min}, "
+                   f"lambda_base={self.config.lambda_base_per_min}/min, "
                    f"jitter={self.config.jitter_pct}%")
 
         self.publisher = KafkaPublisher(self.config.kafka_bootstrap_servers)
@@ -434,94 +600,97 @@ class GeneratorService:
             tick_start = time.time()
             batch_id = str(uuid.uuid4())[:8]
 
-            logger.info(f"=== Tick {tick} (batch_id={batch_id}) ===")
+            with METRICS_TICK_DURATION.time():
+                logger.info(f"=== Tick {tick} (batch_id={batch_id}) ===")
 
-            try:
-                # Вычисляем количество событий
-                events_count = self.generator._calculate_events_count()
-                logger.info(f"Generating ~{events_count} base events")
+                try:
+                    # Вычисляем количество событий
+                    events_count = self.generator._calculate_events_count()
+                    logger.info(f"Generating ~{events_count} base events")
 
-                # Генерируем батч
-                gen_start = time.time()
-                batch = self.generator.generate_batch(events_count)
-                gen_duration = time.time() - gen_start
+                    # Генерируем батч
+                    gen_start = time.time()
+                    batch = self.generator.generate_batch(events_count)
+                    gen_duration = time.time() - gen_start
 
-                # Публикуем в Kafka
-                pub_start = time.time()
-                total_sent = 0
-                total_errors = 0
+                    # Публикуем в Kafka
+                    pub_start = time.time()
+                    total_sent = 0
+                    total_errors = 0
 
-                sent_counts = {}
-                for topic, events in batch.items():
-                    if events:
-                        sent, errors = self.publisher.publish(topic, events)
-                        sent_counts[topic] = {"sent": sent, "errors": errors}
-                        total_sent += sent
-                        total_errors += errors
+                    sent_counts = {}
+                    for topic, events in batch.items():
+                        if events:
+                            sent, errors = self.publisher.publish(topic, events)
+                            sent_counts[topic] = {"sent": sent, "errors": errors}
+                            total_sent += sent
+                            total_errors += errors
 
-                self.publisher.flush()
-                pub_duration = time.time() - pub_start
+                    self.publisher.flush()
+                    pub_duration = time.time() - pub_start
 
-                # Определяем статус
-                if total_errors == 0:
-                    status = "success"
-                elif total_sent > 0:
-                    status = "partial"
-                else:
-                    status = "error"
+                    # Определяем статус
+                    if total_errors == 0:
+                        status = "success"
+                    elif total_sent > 0:
+                        status = "partial"
+                    else:
+                        status = "error"
 
-                # Сохраняем в историю
-                batch_record = BatchRecord(
-                    batch_id=batch_id,
-                    started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
-                    finished_at=datetime.now(timezone.utc),
-                    sent_total=total_sent,
-                    sent_browser=sent_counts.get("browser_events", {}).get("sent", 0),
-                    sent_location=sent_counts.get("location_events", {}).get("sent", 0),
-                    sent_device=sent_counts.get("device_events", {}).get("sent", 0),
-                    sent_geo=sent_counts.get("geo_events", {}).get("sent", 0),
-                    status=status,
-                    error_message=None if status == "success" else f"Errors: {total_errors}",
-                )
-                self.history.add(batch_record)
+                    # Обновляем метрику последнего успешного тика
+                    if status in ("success", "partial"):
+                        METRICS_LAST_SUCCESS.set_to_current_time()
 
-                # Логируем результат
-                tick_duration = time.time() - tick_start
-                logger.info(
-                    f"Batch {batch_id} completed: "
-                    f"sent={total_sent}, errors={total_errors}, "
-                    f"gen_time={gen_duration:.3f}s, pub_time={pub_duration:.3f}s, "
-                    f"total_time={tick_duration:.3f}s"
-                )
-
-                # Выводим детализацию по топикам
-                for topic, counts in sent_counts.items():
-                    if counts["sent"] > 0:
-                        logger.info(f"  {topic}: {counts['sent']} sent")
-
-            except Exception as e:
-                logger.exception(f"Error in tick {tick}: {e}")
-                # Сохраняем ошибку в историю
-                self.history.add(
-                    BatchRecord(
+                    # Сохраняем в историю
+                    batch_record = BatchRecord(
                         batch_id=batch_id,
                         started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
                         finished_at=datetime.now(timezone.utc),
-                        sent_total=0,
-                        sent_browser=0,
-                        sent_location=0,
-                        sent_device=0,
-                        sent_geo=0,
-                        status="error",
-                        error_message=str(e),
+                        sent_total=total_sent,
+                        sent_browser=sent_counts.get("browser_events", {}).get("sent", 0),
+                        sent_location=sent_counts.get("location_events", {}).get("sent", 0),
+                        sent_device=sent_counts.get("device_events", {}).get("sent", 0),
+                        sent_geo=sent_counts.get("geo_events", {}).get("sent", 0),
+                        status=status,
+                        error_message=None if status == "success" else f"Errors: {total_errors}",
                     )
-                )
+                    self.history.add(batch_record)
+
+                    # Логируем результат
+                    tick_duration = time.time() - tick_start
+                    logger.info(
+                        f"Batch {batch_id} completed: "
+                        f"sent={total_sent}, errors={total_errors}, "
+                        f"gen_time={gen_duration:.3f}s, pub_time={pub_duration:.3f}s, "
+                        f"total_time={tick_duration:.3f}s"
+                    )
+
+                    for topic, counts in sent_counts.items():
+                        if counts["sent"] > 0:
+                            logger.info(f"  {topic}: {counts['sent']} sent")
+
+                except Exception as e:
+                    logger.exception(f"Error in tick {tick}: {e}")
+                    self.history.add(
+                        BatchRecord(
+                            batch_id=batch_id,
+                            started_at=datetime.fromtimestamp(tick_start, tz=timezone.utc),
+                            finished_at=datetime.now(timezone.utc),
+                            sent_total=0,
+                            sent_browser=0,
+                            sent_location=0,
+                            sent_device=0,
+                            sent_geo=0,
+                            status="error",
+                            error_message=str(e),
+                        )
+                    )
 
             # Ждём до следующего тика
             elapsed = time.time() - tick_start
             sleep_time = max(0, self.config.tick_seconds - elapsed)
             if sleep_time > 0:
-                logger.info(f"Sleeping for {sleep_time:.1f}s until next tick")
+                logger.debug(f"Sleeping for {sleep_time:.1f}s until next tick")
                 time.sleep(sleep_time)
 
 

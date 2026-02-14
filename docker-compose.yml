@@ -291,23 +291,28 @@ services:
       dockerfile: Dockerfile
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      GEN_TICK_SECONDS: "60"
+      # Режим steady-stream: короткие тики 1-10 сек (по умолчанию 5)
+      GEN_TICK_SECONDS: "5"
       GEN_LAMBDA_BASE_PER_MIN: "200"
       GEN_JITTER_PCT: "20"
-      GEN_MIN_EVENTS_PER_TICK: "50"
-      GEN_MAX_EVENTS_PER_TICK: "500"
+      GEN_MIN_EVENTS_PER_TICK: "5"
+      GEN_MAX_EVENTS_PER_TICK: "50"
       GEN_DATA_DIR: /data
       GEN_ENABLED: "true"
+      GEN_METRICS_PORT: "9109"
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "9000"
       # PYTHONUNBUFFERED для сразу видеть логи
       PYTHONUNBUFFERED: "1"
+    ports:
+      - "9109:9109"  # Prometheus metrics endpoint
     volumes:
       - ./data:/data:ro
     networks:
       - cs_dwh
     depends_on:
       - kafka
+      - clickhouse
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]

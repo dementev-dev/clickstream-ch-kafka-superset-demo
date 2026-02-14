@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Локальное тестирование генератора без Kafka.
-Просто проверяет логику генерации событий.
+Проверяет логику генерации событий.
 """
 
 import json
@@ -11,6 +11,7 @@ from pathlib import Path
 # Добавляем путь к модулю
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Импортируем до инициализации Kafka (lazy import)
 from generator import Config, EventDictionary, EventGenerator
 
 
@@ -23,20 +24,25 @@ def test_generation():
     # Создаём конфиг с дефолтными значениями
     config = Config(
         kafka_bootstrap_servers="localhost:9092",
-        tick_seconds=60,
-        lambda_base_per_min=10,  # Мало для теста
+        tick_seconds=5,  # Новый дефолт из rev5
+        lambda_base_per_min=200,
         jitter_pct=20,
         min_events_per_tick=5,
-        max_events_per_tick=20,
+        max_events_per_tick=50,
         data_dir=Path(__file__).parent.parent / "data",
         seed=42,
         enabled=True,
+        metrics_port=9109,
+        clickhouse_host="localhost",
+        clickhouse_port=9000,
     )
 
     print(f"\nКонфигурация:")
     print(f"  data_dir: {config.data_dir}")
+    print(f"  tick_seconds: {config.tick_seconds}")
     print(f"  seed: {config.seed}")
     print(f"  lambda_base: {config.lambda_base_per_min}")
+    print(f"  jitter_pct: {config.jitter_pct}")
 
     # Загружаем словарь
     print(f"\nЗагрузка словаря событий...")
