@@ -300,6 +300,9 @@ services:
       GEN_DATA_DIR: /data
       GEN_ENABLED: "true"
       GEN_METRICS_PORT: "9109"
+      # State management (сохранение состояния между рестартами)
+      GEN_STATE_ENABLED: "true"
+      GEN_STATE_RESET: "false"
       # PYTHONUNBUFFERED для сразу видеть логи
       PYTHONUNBUFFERED: "1"
     ports:

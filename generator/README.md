@@ -36,6 +36,8 @@ generator-service -> Kafka topics -> (потребители отдельно)
 | `GEN_SEED` | Сид для воспроизводимости | — |
 | `GEN_ENABLED` | Включить генерацию | `true` |
 | `GEN_METRICS_PORT` | Порт для Prometheus | `9109` |
+| `GEN_STATE_ENABLED` | Сохранять состояние между рестартами | `true` |
+| `GEN_STATE_RESET` | Сбросить состояние при старте | `false` |
 
 ### Режим "раз в минуту" (для демо)
 
@@ -110,6 +112,59 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --from-beginning
 ```
 
+## State Recovery (восстановление состояния)
+
+Генератор сохраняет своё состояние между перезапусками в Kafka-топик `generator_state` (compact topic). Это позволяет:
+
+- Продолжить нумерацию тиков с места остановки
+- Сохранить последовательность случайных чисел (RNG state)
+- Избежать дублирования при рестарте
+
+### Как работает
+
+1. После каждого успешного тика состояние сохраняется в `generator_state`
+2. При старте генератор читает последнее состояние из топика
+3. Если состояние найдено - продолжает с сохранённого tick
+4. Если нет - начинает с tick=1
+
+### Топик `generator_state`
+
+- **Название**: фиксировано `generator_state`
+- **Тип**: compact topic (хранится только последнее значение для каждого ключа)
+- **Ключ**: `default` (для возможности нескольких генераторов в будущем)
+- **Конфигурация**: `cleanup.policy=compact`, минимальный retention
+
+### Просмотр текущего состояния
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic generator_state \
+  --from-beginning \
+  --property print.key=true
+```
+
+### Сброс состояния (начать сначала)
+
+```bash
+# Вариант 1: через env (рекомендуется)
+GEN_STATE_RESET=true docker compose up -d generator
+
+# Вариант 2: удалить топик полностью
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka:29092 \
+  --delete \
+  --topic generator_state
+```
+
+### Отключение сохранения состояния
+
+```bash
+GEN_STATE_ENABLED=false docker compose up -d generator
+```
+
+При отключенном state management генератор всегда начинает с tick=1, RNG инициализируется с GEN_SEED (или случайно).
+
 ## Тестирование
 
 Тесты написаны на **pytest**.
@@ -137,7 +192,8 @@ generator/tests/
 ├── test_generation.py    # Тесты генерации событий
 ├── test_history.py       # Тесты структуры BatchRecord
 ├── test_kafka_history.py # Тесты KafkaBatchHistory
-└── test_service.py       # Тесты GeneratorService
+├── test_service.py       # Тесты GeneratorService
+└── test_state.py         # Тесты GeneratorState и KafkaStateManager
 ```
 
 ### Интеграционный тест

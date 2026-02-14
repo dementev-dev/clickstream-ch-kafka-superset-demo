@@ -38,6 +38,8 @@ def base_config(data_dir):
         seed=42,
         enabled=True,
         metrics_port=9109,
+        state_enabled=True,
+        state_reset=False,
     )
 
 

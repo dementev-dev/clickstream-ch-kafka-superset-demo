@@ -6,10 +6,12 @@
 держим целевую интенсивность events/min без крупных минутных batch.
 """
 
+import base64
 import json
 import logging
 import math
 import os
+import pickle
 import random
 import sys
 import time
@@ -120,6 +122,14 @@ class Config:
     # Порт для Prometheus метрик
     metrics_port: int = field(
         default_factory=lambda: int(os.getenv("GEN_METRICS_PORT", "9109"))
+    )
+
+    # Управление сохранением состояния
+    state_enabled: bool = field(
+        default_factory=lambda: os.getenv("GEN_STATE_ENABLED", "true").lower() == "true"
+    )
+    state_reset: bool = field(
+        default_factory=lambda: os.getenv("GEN_STATE_RESET", "false").lower() == "true"
     )
 
     def __post_init__(self):
@@ -356,25 +366,155 @@ class BatchRecord:
 
 
 # ---------------------------------------------------------------------------
-# Создание топика для истории
+# State record для сохранения состояния генератора
 # ---------------------------------------------------------------------------
-def ensure_history_topic(bootstrap_servers: str) -> None:
-    """Создаёт топик для истории батчей если он не существует."""
+@dataclass
+class GeneratorState:
+    """Состояние генератора для восстановления после рестарта."""
+
+    tick: int
+    rng_state: tuple  # результат random.getstate()
+    last_batch_id: str
+    last_timestamp: datetime
+    version: str = "1.0"
+
+    def to_dict(self) -> dict:
+        """Конвертирует в словарь для сериализации."""
+        # Сериализуем rng_state через pickle + base64
+        rng_state_bytes = pickle.dumps(self.rng_state)
+        rng_state_b64 = base64.b64encode(rng_state_bytes).decode("utf-8")
+
+        return {
+            "tick": self.tick,
+            "rng_state": rng_state_b64,
+            "last_batch_id": self.last_batch_id,
+            "last_timestamp": self.last_timestamp.isoformat(),
+            "version": self.version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GeneratorState":
+        """Создаёт состояние из словаря."""
+        # Десериализуем rng_state
+        rng_state_bytes = base64.b64decode(data["rng_state"])
+        rng_state = pickle.loads(rng_state_bytes)
+
+        return cls(
+            tick=data["tick"],
+            rng_state=rng_state,
+            last_batch_id=data["last_batch_id"],
+            last_timestamp=datetime.fromisoformat(data["last_timestamp"]),
+            version=data.get("version", "1.0"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Kafka state manager - сохраняет/восстанавливает состояние генератора
+# ---------------------------------------------------------------------------
+class KafkaStateManager:
+    """Управление состоянием генератора в Kafka (compact topic)."""
+
+    STATE_TOPIC = "generator_state"
+    STATE_KEY = "default"  # Для возможности нескольких генераторов в будущем
+
+    def __init__(self, bootstrap_servers: str):
+        self.bootstrap_servers = bootstrap_servers
+        KafkaProducerCls, _ = _import_kafka()
+
+        logger.info(f"Connecting to Kafka for state management at {self.bootstrap_servers}")
+        self.producer = KafkaProducerCls(
+            bootstrap_servers=self.bootstrap_servers,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            key_serializer=lambda k: k.encode("utf-8") if k else None,
+            retries=3,
+            retry_backoff_ms=1000,
+        )
+        logger.info("Connected to Kafka for state management successfully")
+
+    def save(self, state: GeneratorState) -> None:
+        """Сохраняет состояние в топик (compact topic - только последнее значение)."""
+        value = state.to_dict()
+        self.producer.send(self.STATE_TOPIC, key=self.STATE_KEY, value=value)
+
+    def flush(self) -> None:
+        """Сбрасывает буфер."""
+        self.producer.flush()
+
+    def close(self) -> None:
+        """Закрывает соединение."""
+        self.producer.close()
+
+    def load(self) -> GeneratorState | None:
+        """Загружает последнее состояние из топика."""
+        from kafka import KafkaConsumer
+
+        logger.info(f"Loading state from topic {self.STATE_TOPIC}")
+        try:
+            consumer = KafkaConsumer(
+                self.STATE_TOPIC,
+                bootstrap_servers=self.bootstrap_servers,
+                auto_offset_reset="earliest",
+                enable_auto_commit=False,
+                consumer_timeout_ms=5000,
+                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            )
+
+            last_state = None
+            for message in consumer:
+                if message.key and message.key.decode("utf-8") == self.STATE_KEY:
+                    last_state = message.value
+
+            consumer.close()
+
+            if last_state:
+                logger.info(f"Restored state: tick={last_state.get('tick')}, "
+                           f"last_batch_id={last_state.get('last_batch_id')}")
+                return GeneratorState.from_dict(last_state)
+            else:
+                logger.info("No previous state found, starting fresh")
+                return None
+
+        except Exception as e:
+            logger.warning(f"Failed to load state: {e}, starting fresh")
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Создание топиков для истории и состояния
+# ---------------------------------------------------------------------------
+def ensure_topics(bootstrap_servers: str) -> None:
+    """Создаёт необходимые топики если они не существуют."""
     from kafka import KafkaAdminClient
     from kafka.admin import NewTopic
     from kafka.errors import TopicAlreadyExistsError
 
     admin_client = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
     try:
-        new_topic = NewTopic(
+        # Топик для истории батчей (обычный, с retention)
+        history_topic = NewTopic(
             name=KafkaBatchHistory.HISTORY_TOPIC,
             num_partitions=1,
             replication_factor=1,
         )
-        admin_client.create_topics([new_topic])
-        logger.info(f"Created topic: {KafkaBatchHistory.HISTORY_TOPIC}")
-    except TopicAlreadyExistsError:
-        logger.debug(f"Topic already exists: {KafkaBatchHistory.HISTORY_TOPIC}")
+
+        # Топик для состояния (compact - храним только последнее значение)
+        state_topic = NewTopic(
+            name=KafkaStateManager.STATE_TOPIC,
+            num_partitions=1,
+            replication_factor=1,
+            topic_configs={
+                "cleanup.policy": "compact",
+                "min.cleanable.dirty.ratio": "0.1",
+                "delete.retention.ms": "100",
+            },
+        )
+
+        for topic in [history_topic, state_topic]:
+            try:
+                admin_client.create_topics([topic])
+                logger.info(f"Created topic: {topic.name}")
+            except TopicAlreadyExistsError:
+                logger.debug(f"Topic already exists: {topic.name}")
     finally:
         admin_client.close()
 
@@ -509,7 +649,9 @@ class GeneratorService:
         self.generator = EventGenerator(self.dictionary, config)
         self.publisher: KafkaPublisher | None = None
         self.history: KafkaBatchHistory | None = None
+        self.state_manager: KafkaStateManager | None = None
         self._running = False
+        self._tick = 0  # Текущий номер тика (восстанавливается из стейта)
 
     def start(self):
         """Запускает основной цикл."""
@@ -524,13 +666,32 @@ class GeneratorService:
         logger.info("Starting generator service...")
         logger.info(f"Configuration: tick={self.config.tick_seconds}s, "
                    f"lambda_base={self.config.lambda_base_per_min}/min, "
-                   f"jitter={self.config.jitter_pct}%")
+                   f"jitter={self.config.jitter_pct}%, "
+                   f"state_enabled={self.config.state_enabled}, "
+                   f"state_reset={self.config.state_reset}")
 
         # Подключаемся к Kafka для публикации событий и истории
-        # Сначала создаём топик для истории если нужно
-        ensure_history_topic(self.config.kafka_bootstrap_servers)
+        # Сначала создаём топики если нужно
+        ensure_topics(self.config.kafka_bootstrap_servers)
         self.publisher = KafkaPublisher(self.config.kafka_bootstrap_servers)
         self.history = KafkaBatchHistory(self.config.kafka_bootstrap_servers)
+
+        # Инициализируем state manager если включено
+        if self.config.state_enabled:
+            self.state_manager = KafkaStateManager(self.config.kafka_bootstrap_servers)
+
+            # Восстанавливаем стейт если не требуется сброс
+            if not self.config.state_reset:
+                restored_state = self.state_manager.load()
+                if restored_state:
+                    self._tick = restored_state.tick
+                    self.generator.rng.setstate(restored_state.rng_state)
+                    logger.info(f"Restored state: continuing from tick {self._tick}, "
+                               f"last_batch_id={restored_state.last_batch_id}")
+            else:
+                logger.info("State reset requested, starting fresh")
+        else:
+            logger.info("State management disabled")
 
         self._running = True
 
@@ -549,18 +710,37 @@ class GeneratorService:
             self.publisher.close()
         if self.history:
             self.history.close()
+        if self.state_manager:
+            self.state_manager.close()
+
+    def _save_state(self, batch_id: str) -> None:
+        """Сохраняет текущее состояние генератора."""
+        if not self.state_manager or not self.config.state_enabled:
+            return
+
+        try:
+            state = GeneratorState(
+                tick=self._tick,
+                rng_state=self.generator.rng.getstate(),
+                last_batch_id=batch_id,
+                last_timestamp=datetime.now(timezone.utc),
+            )
+            self.state_manager.save(state)
+            self.state_manager.flush()
+            logger.debug(f"Saved state: tick={self._tick}, batch_id={batch_id}")
+        except Exception as e:
+            logger.warning(f"Failed to save state: {e}")
+            METRICS_ERRORS_TOTAL.labels(topic="state").inc()
 
     def _main_loop(self):
         """Основной цикл тиков."""
-        tick = 0
-
         while self._running:
-            tick += 1
+            self._tick += 1
             tick_start = time.time()
             batch_id = str(uuid.uuid4())[:8]
 
             with METRICS_TICK_DURATION.time():
-                logger.info(f"=== Tick {tick} (batch_id={batch_id}) ===")
+                logger.info(f"=== Tick {self._tick} (batch_id={batch_id}) ===")
 
                 try:
                     # Вычисляем количество событий
@@ -593,9 +773,10 @@ class GeneratorService:
                     else:
                         status = "error"
 
-                    # Обновляем метрику последнего успешного тика
+                    # Обновляем метрику последнего успешного тика и сохраняем стейт
                     if status in ("success", "partial"):
                         METRICS_LAST_SUCCESS.set_to_current_time()
+                        self._save_state(batch_id)
 
                     # Флашим публикацию событий
                     self.publisher.flush()
@@ -635,7 +816,7 @@ class GeneratorService:
                             logger.info(f"  {topic}: {counts['sent']} sent")
 
                 except Exception as e:
-                    logger.exception(f"Error in tick {tick}: {e}")
+                    logger.exception(f"Error in tick {self._tick}: {e}")
                     # Пытаемся записать ошибку в историю (best-effort)
                     try:
                         self.history.add(
