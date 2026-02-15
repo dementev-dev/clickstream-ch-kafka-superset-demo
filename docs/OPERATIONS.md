@@ -119,6 +119,56 @@ Prometheus метрики доступны на `http://localhost:9109/metrics`:
 - `generator_publish_errors_total` — ошибки публикации
 - `generator_tick_duration_seconds` — длительность тика
 
+### Мониторинг через Grafana
+
+**Dashboard URL:** `http://localhost:3000/d/generator-overview`
+
+Дашборд "Generator Overview" автоматически загружается при старте Grafana и содержит:
+
+| Раздел | Панели | Описание |
+|--------|--------|----------|
+| **Overview** | Events/min | Скорость генерации событий в минуту |
+| | Tick Duration | Медиана и p99 длительности тика |
+| | Last Successful Tick | Время последнего успешного тика |
+| **Events by Topic** | Events per Hour (24h bar chart) | Распределение событий по часам и топикам |
+| | Events Rate by Topic | График по 4 топикам (browser, location, device, geo) |
+| | Total Events by Topic | Суммарные счётчики по каждому топику |
+| **Errors** | Total Errors | Общее число ошибок публикации |
+| | Error Rate | Скорость ошибок (err/min) |
+| | Errors by Topic | Ошибки разбиты по топикам |
+| **Tick Statistics** | Tick Duration Distribution | p50, p95, p99 длительности тиков |
+| | Events per Tick | Среднее число событий на тик |
+| | Hour Factor | Текущий временной множитель (0.7/1.0/1.2) |
+| **Status** | Generator Status | Статус работы (enabled/disabled) |
+| | Generator Health | Статус активности (heartbeat last tick), не проверяет state save |
+| | Time Since Last Tick | Время с последнего тика |
+| **Info** | Полезные команды и параметры конфигурации |
+
+#### Troubleshooting генератора
+
+**Нет данных на дашборде:**
+1. Проверить, что генератор запущен: `docker compose ps generator`
+2. Проверить метрики напрямую: `curl http://localhost:9109/metrics`
+3. Проверить target в Prometheus: `http://localhost:9090/targets` (job: generator)
+
+**Высокий error rate:**
+- Проверить доступность Kafka: `docker compose ps kafka`
+- Смотреть логи: `make generator-logs`
+- Проверить consumer lag: дашборд Kafka Overview
+
+**Длительные тики (p99 > 1s):**
+- Проверить CPU/ресурсы контейнера
+- Возможно, высокая нагрузка на Kafka — проверить дашборд Kafka
+
+**Dashboard не загрузился:**
+```bash
+# Перезагрузить provisioning Grafana
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
+
+# Или пересоздать контейнер
+docker compose restart grafana
+```
+
 ## Рекомендуемый сценарий (фаза 2)
 
 ```bash
@@ -190,7 +240,7 @@ curl -s http://localhost:9090/api/v1/targets | grep -o '"health":"[^"]*"'
   - Airflow отправляет метрики в StatsD-формате на `statsd-exporter:8125`
   - Mapping конфигурация: `configs/statsd_mapping.yml`
 - **Grafana provisioning** (`configs/grafana/provisioning/`):
-  - Дашборды: ClickHouse Overview, Kafka Overview, Airflow Overview
+  - Дашборды: ClickHouse Overview, Kafka Overview, Airflow Overview, Generator Overview
   - Алерты: ClickHouse, Kafka, Airflow
 
 ### После `git pull`: быстрый апдейт мониторинга

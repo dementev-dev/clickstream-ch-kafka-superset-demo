@@ -85,6 +85,46 @@ curl http://localhost:9109/metrics
 curl http://localhost:9090/api/v1/targets | grep generator
 ```
 
+## Мониторинг в Grafana
+
+**Dashboard URL:** `http://localhost:3000/d/generator-overview`
+
+Дашборд "Generator Overview" предоставляет полную визуализацию работы генератора:
+
+### Ключевые панели
+
+| Панель | Метрика | Описание |
+|--------|---------|----------|
+| **Events/min** | `rate(generator_events_total[1m]) * 60` | Текущая скорость генерации |
+| **Tick Duration** | `generator_tick_duration_seconds` | p50 и p99 длительности тика |
+| **Last Successful Tick** | `generator_last_success_timestamp` | Время последнего успешного тика |
+| **Events per Hour** | `increase(generator_events_total[1h])` | 24-часовое распределение по топикам (bar chart) |
+| **Errors** | `generator_publish_errors_total` | Общее число и rate ошибок |
+| **Generator Status** | derived | Активен ли генератор |
+
+### Структура дашборда
+
+Дашборд разделён на 6 секций:
+
+1. **Overview** — ключевые метрики (events/min, tick duration, last success)
+2. **Events by Topic** — bar chart Events per Hour, rate by topic, total counters
+3. **Errors** — total errors, error rate, errors by topic
+4. **Tick Statistics** — duration distribution (p50/p95/p99), events per tick, hour factor
+5. **Status** — generator status, generator health (heartbeat), time since last tick
+6. **Info** — полезные команды и параметры конфигурации
+
+### Доступ к дашборду
+
+Дашборд автоматически загружается в Grafana при старте контейнера (provisioning).
+
+```bash
+# Открыть дашборд
+open http://localhost:3000/d/generator-overview
+
+# Перезагрузить provisioning (если дашборд не появился)
+curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload
+```
+
 ## История batch
 
 История пишется в Kafka-топик `generator_batch_history` (JSON).
