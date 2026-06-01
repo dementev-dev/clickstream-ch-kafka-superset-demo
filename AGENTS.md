@@ -27,6 +27,22 @@
 - Минимальный порядок: `resolve-library-id` -> `query-docs`.
 - Принятое решение фиксировать в коде и/или документации (кратко: что проверили и почему выбрали именно этот вариант).
 
+## Agent skills
+
+Конфигурация для инженерных скиллов (набор Matt Pocock). Подробности — в `docs/agents/`.
+
+### Issue tracker
+
+Локальный markdown: задачи и PRD живут файлами в `.scratch/<feature>/` (коммитятся, `.scratch/` не в `.gitignore`). GitHub Issues не используются. См. `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Пять канонических ролей, строки совпадают с именами (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). См. `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` и `docs/adr/` в корне репозитория. См. `docs/agents/domain.md`.
+
 ## Навигация по документации
 
 - [README.md](./README.md) — пользовательский quick start и обзор.
