@@ -34,6 +34,7 @@
 - [docs/OPERATIONS.md](./docs/OPERATIONS.md) — запуск, DAG-параметры, проверки и troubleshooting.
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — детали по слоям STG/ODS/DDS/DM.
 - [docs/COMMIT_RULES.md](./docs/COMMIT_RULES.md) — правила оформления коммитов.
+- [docs/course/](./docs/course/) — продвинутый учебный курс «со звёздочкой» на базе стенда (PRD, план обучения, стандарт уроков); начинать с [docs/course/README.md](./docs/course/README.md).
 - [plans/](./plans/) — legacy-планы (использовать как исторический контекст, не как источник истины).
 
 ## Ограничения по структуре
