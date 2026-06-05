@@ -188,8 +188,8 @@ URL: `http://localhost:3000/d/clickhouse-overview/clickhouse-overview`
 | Раздел | Метрики |
 |--------|---------|
 | System Health | CPU Usage, Memory Resident, Memory Code |
-| Query Performance | Queries/sec, Active Queries, Failed Queries, Total Queries, Inserted Rows/sec |
-| MergeTree Storage | Total Parts, Parts by State, Total Merges, Merges/sec |
+| Query Performance | Queries per Second, Active Queries, Failed Queries (total), Total Queries, Inserted Rows/sec |
+| MergeTree Storage | Total Parts, Parts by State, Total Merges, Merges per Second |
 
 Принятое решение по метрикам: сверили naming через Context7 (`/clickhouse/clickhouse-docs`, раздел Prometheus interface) и заменили недоступные в `25.1` серии на фактически экспортируемые (`ClickHouseProfileEvents_InsertedRows`, `ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables`, `ClickHouseMetrics_Parts*`).
 
@@ -199,10 +199,10 @@ URL: `http://localhost:3000/d/kafka-overview/kafka-overview`
 
 | Раздел | Метрики |
 |--------|---------|
-| Cluster Health | Brokers Up, Topics Count, Total Partitions, Consumer Groups |
-| Throughput | Messages In/sec by Topic |
-| Consumers | Consumer Lag by Group, Consumer Lag Table |
-| Partitions | Partition Offsets (Current), Oldest vs Current Offset Gap |
+| Cluster Health | Brokers Up, Topics, Total Partitions, Consumer Groups |
+| Throughput | Messages In / sec by Topic |
+| Consumers | Consumer Lag by Group |
+| Partitions | Partition Offsets (Current) |
 
 **Источник метрик:** `kafka-exporter` (danielqsj/kafka-exporter), формат конфигурации подтверждён через Context7 (`/danielqsj/kafka_exporter`, `/prometheus/docs`).
 
