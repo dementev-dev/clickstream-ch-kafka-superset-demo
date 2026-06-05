@@ -28,7 +28,7 @@ make transform
 # Автоматическая инициализация (создание подключения и датасетов)
 make superset-init
 
-# Создание дашборда с чартами
+# Создание дашборда с чартами; при необходимости обновляет metadata колонок датасетов
 make superset-dashboard
 ```
 
@@ -62,6 +62,8 @@ make superset-dashboard
 - **🎯 Unique Sessions** — уникальные сессии (click_id)
 - **📈 Avg Events/Session** — среднее количество событий на сессию
 
+KPI разложены в одну строку по 12-колоночной сетке Superset: четыре блока по 3 колонки.
+
 #### Динамика трафика
 - **📅 Events by Hour** — линейный график событий по часам
 - **📱 Traffic by Device** — pie chart распределения по устройствам
@@ -80,7 +82,7 @@ make superset-dashboard
 
 | Фильтр | Поле | Тип | Применение |
 |--------|------|-----|------------|
-| 📅 Date Range | `event_date` | Time Range | Все чарты |
+| 📅 Date Range | `event_date` | Time Range | Все чарты; по умолчанию `No filter`, чтобы демо-данные 2022 года не скрывались |
 | 🌍 Country | `geo_country` | Multi-select | Все чарты |
 | 📱 Device Type | `device_type` | Multi-select | Все чарты |
 | 🌐 Browser | `browser_name` | Multi-select | Все чарты |

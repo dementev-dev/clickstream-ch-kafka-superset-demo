@@ -179,7 +179,7 @@ flowchart LR
 | `make ddl` | Применить DDL в ClickHouse (вне Airflow) |
 | `make transform` | Запустить batch-процесс `STG -> ODS -> DDS -> DM` (вне Airflow) |
 | `make superset-init` | Подключение к ClickHouse + импорт датасетов |
-| `make superset-dashboard` | Создание дашборда с чартами |
+| `make superset-dashboard` | Создание дашборда с чартами, обновление layout/metadata |
 | `make superset-ui` | Показать URL Superset |
 | `make superset-restart` | Перезапуск Superset |
 
@@ -275,6 +275,9 @@ make superset-dashboard
 | **География** | World Map по странам | `v_events_enriched` |
 | **Маркетинг** | UTM Effectiveness Table, Top Pages | `v_utm_effectiveness`, `v_top_pages_daily` |
 | **Quality** | Data Quality Summary | `dq_summary` |
+
+Фильтр `Date Range` по умолчанию открыт как `No filter`, потому что демо-данные лежат в
+историческом диапазоне (`2022-11-28`).
 
 ### Архитектура Superset
 

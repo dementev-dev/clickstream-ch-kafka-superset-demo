@@ -114,7 +114,7 @@ CHARTS_CONFIG = [
                 }
             ],
             "groupby": [],
-            "time_range": "Last week",
+            "time_range": "No filter",
             "adhoc_filters": [],
             "row_limit": 10000
         }
@@ -231,6 +231,20 @@ DASHBOARD_CONFIG = {
 }
 
 
+CHART_LAYOUT_BY_TITLE = {
+    "📊 Total Events": {"width": 3, "height": 32, "x": 0, "y": 0},
+    "👤 Unique Users": {"width": 3, "height": 32, "x": 3, "y": 0},
+    "🎯 Unique Sessions": {"width": 3, "height": 32, "x": 6, "y": 0},
+    "📈 Avg Events/Session": {"width": 3, "height": 32, "x": 9, "y": 0},
+    "📅 Events by Hour": {"width": 8, "height": 60, "x": 0, "y": 32},
+    "📱 Traffic by Device": {"width": 4, "height": 60, "x": 8, "y": 32},
+    "🌍 Geography Map": {"width": 6, "height": 60, "x": 0, "y": 92},
+    "🔗 UTM Effectiveness Table": {"width": 6, "height": 60, "x": 6, "y": 92},
+    "📄 Top Pages": {"width": 6, "height": 60, "x": 0, "y": 152},
+    "🔍 Data Quality Summary": {"width": 6, "height": 60, "x": 6, "y": 152},
+}
+
+
 def sync_query_context(chart, params: dict, dataset_id: int) -> None:
     """
     Синхронизирует сохраненный query_context с обновленными params чарта.
@@ -302,7 +316,7 @@ def build_dashboard_metadata(filter_dataset_id: int | None) -> str:
                 "name": "📅 Date Range",
                 "filterType": "filter_time",
                 "targets": [{"datasetId": filter_dataset_id, "column": {"name": "event_date"}}],
-                "defaultValue": "Last week",
+                "defaultValue": "No filter",
                 "scope": {"rootPath": ["ROOT_ID"], "excluded": []},
                 "cascadeParentIds": [],
                 "isInstant": True
@@ -377,6 +391,14 @@ def main() -> bool:
             if not dataset:
                 logger.warning(f"Dataset '{chart_config['dataset_name']}' not found, skipping chart")
                 continue
+
+            if not dataset.columns:
+                # Если dataset создали до DDL/DM, в metadata Superset нет колонок.
+                # Обновляем их здесь, чтобы dashboard восстанавливался через make superset-dashboard.
+                dataset.fetch_metadata()
+                db.session.commit()
+                logger.info("Refreshed dataset metadata: %s", dataset.table_name)
+
             datasets_by_name[chart_config["dataset_name"]] = dataset.id
 
             try:
@@ -452,13 +474,15 @@ def main() -> bool:
             },
         }
 
-        # Добавляем чарты в layout (grid: 12 columns)
-        y_position = 0
-        chart_index = 0
-
+        # Раскладываем dashboard вручную по 12-колоночной сетке:
+        # KPI в одну строку, затем аналитические блоки парами.
         for chart in created_charts:
             if chart:
                 chart_component_id = f"CHART-{chart['id']}"
+                layout = CHART_LAYOUT_BY_TITLE.get(
+                    chart["title"],
+                    {"width": 6, "height": 50, "x": 0, "y": 212},
+                )
                 positions[chart_component_id] = {
                     "id": chart_component_id,
                     "type": "CHART",
@@ -467,16 +491,13 @@ def main() -> bool:
                     "meta": {
                         "chartId": chart['id'],
                         "sliceName": chart['title'],
-                        "height": 50,
-                        "width": 4 if chart_index < 4 else 6,
-                        "x": (chart_index % 3) * 4 if chart_index < 4 else (chart_index % 2) * 6,
-                        "y": y_position,
+                        "height": layout["height"],
+                        "width": layout["width"],
+                        "x": layout["x"],
+                        "y": layout["y"],
                     },
                 }
                 positions["GRID_ID"]["children"].append(chart_component_id)
-                chart_index += 1
-                if chart_index % 4 == 0:
-                    y_position += 50
 
         # Создаём дашборд
         if created_charts:
