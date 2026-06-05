@@ -30,7 +30,9 @@ CHARTS_CONFIG = [
     # KPI блок
     {
         "slice_name": "📊 Total Events",
-        "viz_type": "big_number",
+        # big_number_total = итог по всему срезу (без granularity), а не последний
+        # временной бакет, как у big_number.
+        "viz_type": "big_number_total",
         "dataset_name": "v_events_enriched",
         "params": {
             "metric": {
@@ -41,15 +43,13 @@ CHARTS_CONFIG = [
                 "label": "Total Events",
                 "optionName": "metric_1"
             },
-            "granularity_sqla": "event_ts",
             "y_axis_format": ",d",
-            "show_trend_line": False,
             "time_range": "No filter"
         }
     },
     {
         "slice_name": "👤 Unique Users",
-        "viz_type": "big_number",
+        "viz_type": "big_number_total",
         "dataset_name": "v_events_enriched",
         "params": {
             "metric": {
@@ -58,15 +58,13 @@ CHARTS_CONFIG = [
                 "label": "Unique Users",
                 "optionName": "metric_2"
             },
-            "granularity_sqla": "event_ts",
             "y_axis_format": ",d",
-            "show_trend_line": False,
             "time_range": "No filter"
         }
     },
     {
         "slice_name": "🎯 Unique Sessions",
-        "viz_type": "big_number",
+        "viz_type": "big_number_total",
         "dataset_name": "v_events_enriched",
         "params": {
             "metric": {
@@ -75,15 +73,13 @@ CHARTS_CONFIG = [
                 "label": "Unique Sessions",
                 "optionName": "metric_3"
             },
-            "granularity_sqla": "event_ts",
             "y_axis_format": ",d",
-            "show_trend_line": False,
             "time_range": "No filter"
         }
     },
     {
         "slice_name": "📈 Avg Events/Session",
-        "viz_type": "big_number",
+        "viz_type": "big_number_total",
         "dataset_name": "v_events_enriched",
         "params": {
             "metric": {
@@ -92,9 +88,7 @@ CHARTS_CONFIG = [
                 "label": "Avg Events/Session",
                 "optionName": "metric_4"
             },
-            "granularity_sqla": "event_ts",
             "y_axis_format": ".2f",
-            "show_trend_line": False,
             "time_range": "No filter"
         }
     },
@@ -231,18 +225,26 @@ DASHBOARD_CONFIG = {
 }
 
 
-CHART_LAYOUT_BY_TITLE = {
-    "📊 Total Events": {"width": 3, "height": 32, "x": 0, "y": 0},
-    "👤 Unique Users": {"width": 3, "height": 32, "x": 3, "y": 0},
-    "🎯 Unique Sessions": {"width": 3, "height": 32, "x": 6, "y": 0},
-    "📈 Avg Events/Session": {"width": 3, "height": 32, "x": 9, "y": 0},
-    "📅 Events by Hour": {"width": 8, "height": 60, "x": 0, "y": 32},
-    "📱 Traffic by Device": {"width": 4, "height": 60, "x": 8, "y": 32},
-    "🌍 Geography Map": {"width": 6, "height": 60, "x": 0, "y": 92},
-    "🔗 UTM Effectiveness Table": {"width": 6, "height": 60, "x": 6, "y": 92},
-    "📄 Top Pages": {"width": 6, "height": 60, "x": 0, "y": 152},
-    "🔍 Data Quality Summary": {"width": 6, "height": 60, "x": 6, "y": 152},
-}
+# Раскладка дашборда по строкам (Superset layout v2 — флекс-модель ROW/CHART).
+# Superset НЕ использует абсолютные координаты x/y: ширина чарта (1..12) имеет
+# смысл только внутри строки-контейнера ROW. Без ROW каждый чарт занимает всю
+# ширину и валится в одну колонку. Поэтому раскладываем именно строками.
+# Каждая строка — список (slice_name, width); сумма width в строке должна быть ≤ 12.
+DASHBOARD_ROWS = [
+    # KPI-полоса: 4 числа в один ряд
+    [("📊 Total Events", 3), ("👤 Unique Users", 3),
+     ("🎯 Unique Sessions", 3), ("📈 Avg Events/Session", 3)],
+    # Динамика во времени + разрез по устройствам
+    [("📅 Events by Hour", 8), ("📱 Traffic by Device", 4)],
+    # География + эффективность маркетинговых каналов
+    [("🌍 Geography Map", 6), ("🔗 UTM Effectiveness Table", 6)],
+    # Популярные страницы + качество данных
+    [("📄 Top Pages", 6), ("🔍 Data Quality Summary", 6)],
+]
+
+# Высота строки в grid-units Superset (одинаковая для всех чартов строки —
+# чтобы они выравнивались по нижней границе).
+ROW_HEIGHTS = [30, 60, 60, 60]
 
 
 def sync_query_context(chart, params: dict, dataset_id: int) -> None:
@@ -274,18 +276,18 @@ def sync_query_context(chart, params: dict, dataset_id: int) -> None:
         chart.query_context = json.dumps(query_context)
         return
 
-    if chart.viz_type == "big_number":
+    if chart.viz_type == "big_number_total":
+        # Итоговое число по всему срезу: не time-series, без granularity и
+        # time-grain — иначе запрос группируется по времени и число «прыгает»
+        # на значение последнего бакета.
         query = queries[0]
-        granularity = params.get("granularity_sqla")
-        if granularity:
-            query["granularity"] = granularity
-        query["is_timeseries"] = True
+        query["is_timeseries"] = False
+        query.pop("granularity", None)
         query["time_range"] = params.get("time_range", query.get("time_range"))
         if "metric" in params:
             query["metrics"] = [params["metric"]]
         extras = query.get("extras") if isinstance(query.get("extras"), dict) else {}
-        if "time_grain_sqla" in params:
-            extras["time_grain_sqla"] = params.get("time_grain_sqla")
+        extras.pop("time_grain_sqla", None)
         query["extras"] = extras
     elif params.get("x_axis") or params.get("groupby"):
         # Для категориальных графиков синхронизируем колонки измерений.
@@ -474,30 +476,63 @@ def main() -> bool:
             },
         }
 
-        # Раскладываем dashboard вручную по 12-колоночной сетке:
-        # KPI в одну строку, затем аналитические блоки парами.
-        for chart in created_charts:
-            if chart:
-                chart_component_id = f"CHART-{chart['id']}"
-                layout = CHART_LAYOUT_BY_TITLE.get(
-                    chart["title"],
-                    {"width": 6, "height": 50, "x": 0, "y": 212},
-                )
-                positions[chart_component_id] = {
-                    "id": chart_component_id,
-                    "type": "CHART",
-                    "children": [],
+        # Раскладываем dashboard строками (ROW): KPI в один ряд, затем
+        # аналитические блоки парами. Каждый CHART обязан лежать внутри ROW,
+        # иначе Superset игнорирует width и ставит чарты в одну колонку.
+        charts_by_title = {c["title"]: c for c in created_charts if c}
+
+        def add_chart(component_id_owner_row: str, chart: dict, width: int, height: int) -> str:
+            """Регистрирует CHART-компонент и возвращает его id."""
+            cid = f"CHART-{chart['id']}"
+            positions[cid] = {
+                "id": cid,
+                "type": "CHART",
+                "children": [],
+                "parents": ["ROOT_ID", "GRID_ID", component_id_owner_row],
+                "meta": {
+                    "chartId": chart["id"],
+                    "sliceName": chart["title"],
+                    "width": width,
+                    "height": height,
+                },
+            }
+            return cid
+
+        placed_titles = set()
+        for row_idx, row in enumerate(DASHBOARD_ROWS):
+            row_id = f"ROW-{row_idx}"
+            height = ROW_HEIGHTS[row_idx] if row_idx < len(ROW_HEIGHTS) else 50
+            row_children = []
+            for title, width in row:
+                chart = charts_by_title.get(title)
+                if not chart:
+                    continue
+                row_children.append(add_chart(row_id, chart, width, height))
+                placed_titles.add(title)
+            if row_children:
+                positions[row_id] = {
+                    "id": row_id,
+                    "type": "ROW",
+                    "children": row_children,
                     "parents": ["ROOT_ID", "GRID_ID"],
-                    "meta": {
-                        "chartId": chart['id'],
-                        "sliceName": chart['title'],
-                        "height": layout["height"],
-                        "width": layout["width"],
-                        "x": layout["x"],
-                        "y": layout["y"],
-                    },
+                    "meta": {"background": "BACKGROUND_TRANSPARENT"},
                 }
-                positions["GRID_ID"]["children"].append(chart_component_id)
+                positions["GRID_ID"]["children"].append(row_id)
+
+        # Чарты, не описанные в DASHBOARD_ROWS, кладём отдельной строкой во всю
+        # ширину — чтобы новый чарт не «потерялся» из дашборда.
+        leftovers = [c for c in created_charts if c and c["title"] not in placed_titles]
+        if leftovers:
+            row_id = "ROW-extra"
+            row_children = [add_chart(row_id, c, 12, 50) for c in leftovers]
+            positions[row_id] = {
+                "id": row_id,
+                "type": "ROW",
+                "children": row_children,
+                "parents": ["ROOT_ID", "GRID_ID"],
+                "meta": {"background": "BACKGROUND_TRANSPARENT"},
+            }
+            positions["GRID_ID"]["children"].append(row_id)
 
         # Создаём дашборд
         if created_charts:
