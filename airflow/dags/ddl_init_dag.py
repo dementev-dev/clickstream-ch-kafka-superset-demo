@@ -9,7 +9,6 @@ DAG инициализации DDL в ClickHouse.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -20,6 +19,8 @@ from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
+from utils.airflow_params import parse_bool_param
+from utils.sql_helpers import load_sql_statements as load_sql_file_statements
 
 
 # -----------------------------------------------------------------------------
@@ -55,23 +56,7 @@ SQL_ROOT = resolve_sql_root()
 
 def load_sql_statements(relative_path: str) -> tuple[str, ...]:
     """Читает SQL-файл и делит его на отдельные команды по ';'."""
-    file_path = SQL_ROOT / relative_path
-    if not file_path.is_file():
-        raise AirflowException(f"SQL-файл не найден: {file_path}")
-
-    sql_text = file_path.read_text(encoding="utf-8")
-    statements: list[str] = []
-    for segment in sql_text.split(";"):
-        # Убираем блочные и строковые комментарии, чтобы не отправлять "пустые" запросы.
-        no_block_comments = re.sub(r"/\*.*?\*/", "", segment, flags=re.S)
-        lines = [line for line in no_block_comments.splitlines() if not line.strip().startswith("--")]
-        cleaned = "\n".join(lines).strip()
-        if cleaned:
-            statements.append(cleaned)
-
-    if not statements:
-        raise AirflowException(f"SQL-файл пустой: {file_path}")
-    return tuple(statements)
+    return load_sql_file_statements(SQL_ROOT, relative_path)
 
 
 # -----------------------------------------------------------------------------
@@ -96,7 +81,10 @@ def choose_ddl_mode(**context) -> str:
     """Выбирает ветку выполнения: full DDL или только verify."""
     dag_run = context.get("dag_run")
     conf = dag_run.conf if dag_run else {}
-    verify_only = bool(conf.get("verify_only", context["params"]["verify_only"]))
+    verify_only = parse_bool_param(
+        conf.get("verify_only", context["params"]["verify_only"]),
+        "verify_only",
+    )
     return "skip_ddl" if verify_only else "ddl_00_databases"
 
 

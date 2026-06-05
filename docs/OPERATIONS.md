@@ -59,6 +59,11 @@
 - Запуск: ручной (`Trigger DAG with config`)
 - Параметр: `full_refresh` (`bool`, default `true`) — очистить DDS перед загрузкой
 - Зависимость: требует наличия данных в STG (от `kafka_load` или `make data`)
+- Гейт целостности DDS: `check_dds_integrity` считает события без клика, а
+  `assert_dds_integrity` роняет DAG при `orphan_events > 0`. Проверка идёт после
+  `load_dds` и до `load_dm_summary`, чтобы DM не собирался поверх нарушенной связи
+  `dds.event -> dds.click`. Для `assert_dds_integrity` задано `retries=0`: повтор не
+  чинит уже собранную сироту и только задерживает явный failed-статус.
 
 ## Рекомендуемый сценарий (фаза 2)
 
