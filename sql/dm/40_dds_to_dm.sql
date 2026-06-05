@@ -1,6 +1,10 @@
 -- ============================================================================
 -- Batch-трансформация: DDS → DM (Data Quality summary)
 -- ============================================================================
+-- Поток данных:
+--   dds.click + dds.event + ods.* + stg.* → dm.dq_summary  (сводка по слоям)
+--   Сами витрины (dm.v_*) — это VIEW поверх DDS, создаются в sql/ddl/dm/40_dm.sql.
+--
 -- Что делает:
 --   Собирает статистику по всем слоям (stg/ods/dds) для мониторинга качества данных.
 --   Позволяет быстро проверить, сколько данных прошло через каждый слой
@@ -9,32 +13,11 @@
 -- Важно:
 --   Таблица dq_summary пересоздаётся при каждом запуске (TRUNCATE + INSERT),
 --   чтобы не накапливать дубликаты при повторных прогонах.
+--
+-- Витрины DM сейчас — это VIEW (логика без копии данных). Если тяжёлая агрегация
+-- начнёт тормозить, её материализуют в таблицу; пример — в docs/ARCHITECTURE.md,
+-- раздел «Материализация витрин».
 -- ============================================================================
-
--- ----------------------------------------------------------------------------
--- Пример материализации тяжёлой витрины (закомментировано)
--- ----------------------------------------------------------------------------
--- Если VIEW dm.v_daily_traffic работает медленно, можно создать таблицу:
--- 
--- CREATE TABLE IF NOT EXISTS dm.daily_traffic_mart
--- (
---     event_date Date,
---     geo_country LowCardinality(Nullable(String)),
---     device_type LowCardinality(Nullable(String)),
---     browser_name LowCardinality(Nullable(String)),
---     utm_source LowCardinality(Nullable(String)),
---     utm_medium LowCardinality(Nullable(String)),
---     events UInt64,
---     uniq_clicks UInt64,
---     uniq_users UInt64
--- )
--- ENGINE = ReplacingMergeTree(event_date)
--- PARTITION BY toYYYYMM(event_date)
--- ORDER BY (event_date, geo_country, device_type, browser_name, utm_source, utm_medium);
--- 
--- TRUNCATE TABLE dm.daily_traffic_mart;
--- INSERT INTO dm.daily_traffic_mart SELECT * FROM dm.v_daily_traffic;
--- ----------------------------------------------------------------------------
 
 -- ----------------------------------------------------------------------------
 -- Таблица для сводки по качеству данных (DQ summary)
