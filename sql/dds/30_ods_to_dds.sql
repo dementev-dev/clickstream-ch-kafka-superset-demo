@@ -101,7 +101,11 @@ LEFT JOIN (
     FROM ods.geo_by_click
     WHERE click_id IS NOT NULL
     GROUP BY click_id
-) AS g ON g.click_id = c.click_id;
+) AS g ON g.click_id = c.click_id
+-- join_use_nulls=1: при несовпадении LEFT JOIN кладёт в правые колонки NULL, а не дефолт.
+-- Без этого assumeNotNull(click_id) на несовпавшей строке стал бы нулевым UUID (не NULL),
+-- и проверки if(d.click_id IS NULL, ...) / if(g.click_id IS NULL, ...) молча не сработали бы.
+SETTINGS join_use_nulls = 1;
 
 -- ----------------------------------------------------------------------------
 -- Сущность: dds.event (объединяет browser + location)
@@ -165,4 +169,7 @@ LEFT JOIN (
     FROM ods.location_event
     WHERE event_id IS NOT NULL
     GROUP BY event_id
-) AS l ON l.event_id = b.event_id;
+) AS l ON l.event_id = b.event_id
+-- join_use_nulls=1: чтобы при отсутствии location поле l.event_id было NULL, а не нулевым UUID,
+-- и проверка if(l.event_id IS NULL, ['location_not_found'], []) реально срабатывала.
+SETTINGS join_use_nulls = 1;
