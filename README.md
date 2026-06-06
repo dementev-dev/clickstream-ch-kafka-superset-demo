@@ -251,7 +251,7 @@ curl http://localhost:8088/health  # должно вернуть 200
 Что создаётся автоматически:
 - **Подключение к ClickHouse**: `clickhouse_dwh` (URI: `clickhousedb://default:123456@clickhouse:8123/default`)
 - **Датасеты** (6 шт.): `v_events_enriched`, `v_daily_traffic`, `v_utm_effectiveness`, `v_top_pages_daily`, `v_session_overview`, `dq_summary`
-- **Чарты** (10 шт.): KPI метрики, графики трафика, география, UTM-эффективность, качество данных
+- **Чарты** (10 шт.): KPI метрики, графики трафика, география, UTM-эффективность, прохождение строк по слоям
 - **Дашборд**: "🛒 E-commerce Analytics Dashboard"
 
 ### Ручная инициализация (если автоматика не сработала)
@@ -270,11 +270,11 @@ make superset-dashboard
 
 | Блок | Чарты | Датасет |
 |------|-------|---------|
-| **KPI** | Total Events, Unique Users, Unique Sessions, Avg Events/Session | `v_events_enriched` |
+| **KPI** | Total Events, Unique Users, Avg Events/Visit, Conversion to /confirmation | `v_events_enriched` |
 | **Динамика** | Events by Hour (timeline), Traffic by Device (pie) | `v_events_enriched` |
-| **География** | World Map по странам | `v_events_enriched` |
-| **Маркетинг** | UTM Effectiveness Table, Top Pages | `v_utm_effectiveness`, `v_top_pages_daily` |
-| **Quality** | Data Quality Summary | `dq_summary` |
+| **География** | Geography Map по странам | `v_events_enriched` |
+| **Маркетинг** | UTM Effectiveness Table, Page Funnel | `v_utm_effectiveness`, `v_top_pages_daily` |
+| **Слои** | Rows by Layer (event) — прохождение строк STG→ODS→DDS→DM | `dq_summary` |
 
 Фильтр `Date Range` по умолчанию открыт как `No filter`, потому что демо-данные лежат в
 историческом диапазоне (`2022-11-28`).

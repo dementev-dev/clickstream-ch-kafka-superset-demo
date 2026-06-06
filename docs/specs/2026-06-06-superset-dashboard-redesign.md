@@ -63,7 +63,7 @@ geo_country: 40 | device_type: 2 (Mobile/Computer) | utm_source: 5 | utm_medium:
 | Geography Map | world_map | оставить (40 стран; тип модернизировать отдельно) |
 | Traffic by Device | pie | оставить |
 | Events by Hour | line | **проверить на пустоту**, иначе дропнуть |
-| Data Quality Summary | dist_bar | оставить |
+| Data Quality Summary | dist_bar | оставить (⚠️ позже пересмотрено — см. ниже) |
 
 ## Options considered
 
@@ -155,3 +155,19 @@ KPI-полоса:
   (разнообразие `event_type`, возвраты пользователей → sessions>users,
   реалистичная воронка) — при возврате к генератору перенести в его
   `KNOWN_ISSUES.md`.
+
+## Пересмотр после приёмки (2026-06-06)
+
+Решение «Data Quality Summary | dist_bar | оставить» **пересмотрено** при визуальной
+проверке дашборда. Чарт суммировал `total_rows` по всем таблицам слоя, складывая
+таблицы разного зерна (события 1000 + визиты 99 + пустые error-таблицы) в один столбец,
+и рисовал убывающую «воронку потерь» (stg≈4250 → ods≈2198 → dds≈1099), которой в данных
+нет. Для учебного стенда это активно вводит в заблуждение.
+
+Чарт переделан в честный row-lineage **одного event-зерна**
+(`browser_raw → browser_event → event → v_events_enriched`) и переименован в
+`🧱 Rows by Layer (event)`. Теперь убывание настоящее: шаг `1050 → 1000` — это
+дедупликация at-least-once потока по `event_id` в ODS (`ReplacingMergeTree`).
+В `dm.dq_summary` добавлена строка для слоя `dm` (`sql/dm/40_dds_to_dm.sql`), чтобы
+цепочка замыкалась до витрины. Настоящие сигналы качества (`rows_with_errors`,
+`orphan_events`) на чистых демо-данных = 0 и остаются отдельными `check_name`.
