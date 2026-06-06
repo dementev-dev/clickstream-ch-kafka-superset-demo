@@ -146,7 +146,7 @@ CREATE TABLE stg.browser_raw (
 | `location_event` | event_id | ReplacingMergeTree(src_ingest_ts) | Данные страниц |
 | `device_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Устройства |
 | `geo_by_click` | click_id | ReplacingMergeTree(src_ingest_ts) | Гео-данные |
-| `*_errors` | — | MergeTree | Строки с критичными ошибками парсинга |
+| `*_errors` | — | MergeTree | Копия строк с любой ошибкой разбора: Kafka-метаданные + `raw` + `error_reason` (не типизированная копия события) |
 
 **Batch шаг наполнения ODS:**
 
@@ -155,11 +155,12 @@ CREATE TABLE stg.browser_raw (
 | `load_ods` (`sql/ods/20_stg_to_ods.sql`) | Полная пересборка ODS из STG в рамках DAG `etl_pipeline` |
 | `TRUNCATE ods.*` | Очистка перед пересборкой для детерминированного результата |
 | `INSERT ... SELECT` | Типизация валидных строк в основные ODS таблицы |
-| `INSERT ... SELECT` в `*_errors` | Сохранение строк с критичными ошибками парсинга |
+| `INSERT ... SELECT` в `*_errors` | Сохранение копии строк с любой ошибкой разбора (Kafka-метаданные + `raw` + `error_reason`) |
 
-**Логика разделения:**
-- **Основная таблица**: строки с валидным business key (`WHERE key IS NOT NULL`).
-- **Таблица ошибок**: строки с критичными ошибками (невалидный key, timestamp/координаты и т.п.) через отдельный `INSERT ... SELECT`.
+**Логика разделения (DQ-split):**
+- **Основная таблица** `ods.*`: строки с валидным бизнес-ключом (`WHERE key IS NOT NULL`). Ошибка по *неключевому* полю не выкидывает строку — она остаётся, но помечается в массиве `parse_errors`.
+- **Таблица ошибок** `ods.*_errors`: **копия** строк, где при разборе случилась *любая* ошибка (отдельный `INSERT ... SELECT`). У неё своя схема — не типизированное событие, а сырьё для разбора.
+- Условия пересекаются нарочно: строка с валидным ключом, но битым неключевым полем попадает **и в основную таблицу, и в `*_errors`**. Подробный разбор — в разделе [«Обработка ошибок в ODS»](#обработка-ошибок-в-ods-dq-split) и в уроке 2 курса.
 
 **Пример структуры:**
 ```sql
@@ -202,7 +203,7 @@ GROUP BY error;
 
 | Таблица | PK | Источники | JOIN-ключ |
 |---------|-----|-----------|-----------|
-| `event` | event_id | browser_event + location_event | click_id → click |
+| `event` | event_id | browser_event (ведущая) + location_event (LEFT) | click_id → click |
 | `click` | click_id | device_by_click + geo_by_click | — |
 
 **Структура:**
@@ -301,7 +302,7 @@ LEFT JOIN (
 | `v_daily_traffic` | Агрегация трафика | День × страна × устройство × браузер × UTM |
 | `v_top_pages_daily` | Популярность страниц | День × URL path |
 | `v_utm_effectiveness` | Маркетинговая аналитика | День × UTM source/medium/campaign |
-| `v_session_overview` | Сессионная аналитика | День × пользователь × сессия |
+| `v_session_overview` | Сессионная аналитика (только идентифицированные пользователи, `user_domain_id IS NOT NULL`) | День × пользователь × сессия |
 | `v_dq_errors_daily` | Мониторинг качества | День × тип ошибки |
 
 **Пример:**
@@ -328,7 +329,7 @@ FROM ...
 ```
 
 - `TRUNCATE` предотвращает накопление дубликатов при повторных запусках
-- Хранит статистику по всем слоям (stg/ods/dds) для быстрой проверки
+- Хранит статистику по всем слоям (`stg`/`ods`/`dds`/`dm`): `total_rows` по таблицам, `rows_with_errors` в ODS, `orphan_events` в DDS (события без своего клика) и `total_rows` финальной витрины `dm.v_events_enriched` — чтобы lineage замыкался на одном (event) зерне вплоть до DM
 
 **Почему VIEW:**
 - Для демо: достаточно производительности
@@ -395,7 +396,7 @@ sequenceDiagram
 
 ```mermaid
 erDiagram
-    BROWSER_EVENT ||--|| LOCATION_EVENT : "event_id"
+    BROWSER_EVENT ||--o| LOCATION_EVENT : "event_id (LEFT)"
     BROWSER_EVENT ||--o| DEVICE_BY_CLICK : "click_id"
     BROWSER_EVENT ||--o| GEO_BY_CLICK : "click_id"
     
@@ -424,6 +425,7 @@ erDiagram
         UUID click_id PK
         String os
         String os_name
+        String os_timezone
         String device_type
         UInt8 device_is_mobile
         String user_custom_id
@@ -443,11 +445,11 @@ erDiagram
 
 ### Сборка DDS-сущностей
 
-**event** (browser + location):
+**event** (browser + location), `browser_event` — ведущая таблица:
 ```mermaid
 flowchart LR
     subgraph ODS["ODS"]
-        B["browser_event"]
+        B["browser_event<br/>(ведущая)"]
         L["location_event"]
     end
 
@@ -455,9 +457,11 @@ flowchart LR
         EV["event"]
     end
 
-    B -->|JOIN event_id| EV
-    L -->|JOIN event_id| EV
+    B -->|все event_id| EV
+    L -.->|LEFT JOIN event_id| EV
 ```
+
+**Важно:** сборка идёт **от browser** через `LEFT JOIN location`. `event_id`, которые есть только в `location_event` (без browser), в `dds.event` **не попадают**. Если у события нет своей location-строки — событие остаётся, поля страницы/UTM пустые (`NULL`), и в `ods_parse_errors` ставится маркер `location_not_found`. Тот же принцип, что и в `dds.click`: не теряем, а оставляем видимый след. Подробнее — урок 3 курса (`docs/course/lessons/03_ods_to_dds.md`).
 
 **click** (device + geo) с поддержкой partial data:
 ```mermaid
@@ -512,24 +516,37 @@ flowchart LR
 | **MV + JOIN** | Реалтайм | Eventual consistency, дубли при late arrival |
 | **Batch (выбрано)** | Согласованность, контроль | Задержка до следующего запуска |
 
-### Обработка ошибок в ODS
+### Обработка ошибок в ODS (DQ-split)
 
 **Проблема:** Грязные данные могут содержать не только невалидные ключи, но и невалидные timestamp/координаты/ID.
 
-**Решение:**
-1. **Основная таблица**: строки с валидным business key (`WHERE key IS NOT NULL`)
-2. **Таблица ошибок**: строки с критичными ошибками парсинга через отдельные `INSERT ... SELECT`
-3. **DQ-метрики**: массив `parse_errors` для аудита
+**Решение — DQ-split:**
+1. **Основная таблица** `ods.*`: строки с валидным бизнес-ключом (`WHERE key IS NOT NULL`). Ошибки по *неключевым* полям не выкидывают строку — она остаётся, но помечается массивом `parse_errors`.
+2. **Таблица ошибок** `ods.*_errors`: **копия** строк, где при разборе случилась *любая* ошибка. Это не типизированная копия события, а сырьё для разбора — метаданные доставки из Kafka, исходный JSON и причина ошибки:
+   - `ingest_ts`, `kafka_topic`, `kafka_partition`, `kafka_offset`, `kafka_ts` — координаты сообщения в Kafka;
+   - `raw` — исходный JSON «как пришёл»;
+   - `error_reason` — список несработавших полей одной строкой (`arrayStringConcat(parse_errors, ',')`).
+3. **DQ-метрики**: массив `parse_errors` в основной таблице для аудита.
+
+**Одна строка может попасть в оба места — это не баг, а замысел.** Строка с валидным ключом, но битым неключевым полем (например, валидный `event_id`, но `event_ts IS NULL`) и **остаётся** в основной таблице (с меткой в `parse_errors`), и **копируется** в `*_errors`. Основная таблица отвечает на вопрос «что есть для работы», таблица ошибок — «что пришло битым и требует разбора». Подробный разбор — в уроке 2 курса (`docs/course/lessons/02_stg_to_ods.md`).
 
 ```sql
--- Основная таблица
-INSERT INTO ods.browser_event
-SELECT ... FROM stg.browser_raw WHERE event_id IS NOT NULL;
+-- event_id, event_ts, click_id, parse_errors — это не колонки stg.browser_raw,
+-- а алиасы из блока WITH, где raw (сырой JSON) разбирается через JSONExtract*/*OrNull.
+-- Здесь WITH опущен для краткости; полная версия — в sql/ods/20_stg_to_ods.sql.
 
--- Таблица ошибок
+-- Основная таблица: валидный ключ; parse_errors помечает битые неключевые поля
+INSERT INTO ods.browser_event
+SELECT ..., parse_errors FROM stg.browser_raw WHERE event_id IS NOT NULL;
+
+-- Таблица ошибок: другая схема (Kafka-метаданные + raw + error_reason);
+-- сюда едет копия любой строки с хотя бы одной ошибкой разбора
 INSERT INTO ods.browser_event_errors
-SELECT ... FROM stg.browser_raw
-WHERE event_id IS NULL OR event_ts IS NULL OR click_id IS NULL;
+SELECT ingest_ts, kafka_topic, kafka_partition, kafka_offset, kafka_ts,
+       raw, arrayStringConcat(parse_errors, ',') AS error_reason
+FROM stg.browser_raw
+WHERE length(parse_errors) > 0
+  AND (event_id IS NULL OR event_ts IS NULL OR click_id IS NULL);
 ```
 
 ### Partial data в DDS
@@ -539,7 +556,22 @@ WHERE event_id IS NULL OR event_ts IS NULL OR click_id IS NULL;
 **Решение:**
 1. **UNION DISTINCT** всех click_id из обоих источников
 2. **LEFT JOIN** для получения данных (обрабатываем device-only и geo-only)
-3. **DQ-маркеры**: `device_not_found`, `geo_not_found` в `parse_errors`
+3. **DQ-маркеры** в `ods_parse_errors`: `device_not_found`, `geo_not_found` (нет соответствующего источника по `click_id`), `geo_country_missing` (гео есть, но страна не определена)
+
+### Перечень DQ-маркеров
+
+Маркеры качества копятся в массивах `parse_errors` (ODS) и `ods_parse_errors` (DDS). Полный список:
+
+| Слой / таблица | Маркеры | Когда ставится |
+|----------------|---------|----------------|
+| ODS `browser_event` | `bad_event_id`, `bad_event_timestamp`, `bad_click_id` | поле не разобралось в нужный тип |
+| ODS `location_event` | `bad_event_id` | не разобрался `event_id` |
+| ODS `device_by_click` | `bad_click_id`, `bad_user_domain_id` | не разобрались `click_id` / `user_domain_id` |
+| ODS `geo_by_click` | `bad_click_id`, `bad_geo_latitude`, `bad_geo_longitude` | не разобрались ключ или координаты |
+| DDS `click` | `device_not_found`, `geo_not_found`, `geo_country_missing` | нет источника по `click_id` либо страна не определена |
+| DDS `event` | `location_not_found` | у события нет своей location-строки |
+
+В DDS наследуются `parse_errors` только **ведущего** источника (device → `dds.click`, browser → `dds.event`); к ним добавляются маркеры стыковки (`*_not_found`, `*_missing`). `parse_errors` из geo/location в DDS не переносятся.
 
 ---
 

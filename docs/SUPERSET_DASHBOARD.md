@@ -142,7 +142,6 @@ make transform   # Запуск batch-процесса
 # Superset
 make superset-init      # Инициализация (подключение + датасеты)
 make superset-dashboard # Создание дашборда
-make superset-export    # Экспорт дашборда в JSON
 make superset-ui        # Показать URL и логин
 make superset-restart   # Перезапуск сервиса
 ```
@@ -195,22 +194,16 @@ python /app/superset_init/init_superset.py
 
 ---
 
-## Экспорт и импорт дашборда
+## Импорт дашборда
 
-### Экспорт
-
-```bash
-# Автоматический экспорт в JSON
-make superset-export
-
-# Результат: superset/dashboards/ecommerce_analytics.json
-```
-
-### Импорт
+Основной способ собрать дашборд — `make superset-dashboard` (скрипт `create_dashboard.py`).
+Готовый экспорт дашборда лежит в репозитории на случай ручного импорта:
+`superset/dashboards/ecommerce_analytics.zip.json` (внутри контейнера —
+`/app/superset_init/dashboards/ecommerce_analytics.zip.json`).
 
 ```bash
 # Импорт через CLI
-docker compose exec superset superset import-dashboards -p /app/superset_init/dashboards/ecommerce_analytics.json
+docker compose exec superset superset import-dashboards -p /app/superset_init/dashboards/ecommerce_analytics.zip.json
 
 # Или через UI: Settings → Import Dashboards
 ```
@@ -289,7 +282,7 @@ docker compose exec superset bash -c "curl clickhouse:8123"
 | Сервис | URL | Логин/Пароль |
 |--------|-----|--------------|
 | Superset | http://localhost:8088 | admin / admin |
-| ClickHouse HTTP | http://localhost:9123 | default / (пустой) |
+| ClickHouse HTTP | http://localhost:9123 | default / 123456 |
 | Airflow | http://localhost:8080 | admin / admin |
 | Grafana | http://localhost:3000 | admin / admin |
 | Prometheus | http://localhost:9090 | - |

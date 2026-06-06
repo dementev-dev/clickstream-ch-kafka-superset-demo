@@ -4,25 +4,40 @@
 
 ## Исполняемые файлы
 
-### Airflow
+### Airflow (основной путь запуска)
 
 - `airflow/dags/ddl_init_dag.py` — инициализация схемы ClickHouse
 - `airflow/dags/kafka_load_dag.py` — загрузка в Kafka из JSONL
 - `airflow/dags/etl_pipeline_dag.py` — ETL процесс STG -> ODS -> DDS -> DM
 - `airflow/dags/utils/kafka_helpers.py` — helper-функции для Kafka
+- `airflow/dags/utils/sql_helpers.py` — чтение и подготовка SQL-файлов для DAG
+- `airflow/dags/utils/airflow_params.py` — разбор и валидация параметров DAG
 - `airflow/requirements.txt` — зависимости Airflow/ClickHouse plugin
 
 ### SQL
 
+DDL (форма таблиц):
+
 - `sql/ddl/00_databases.sql` — создание БД `stg`/`ods`/`dds`/`dm`
 - `sql/ddl/stg/10_stg.sql` — STG (Kafka Engine + MV)
-- `sql/ddl/ods/20_ods.sql` — ODS (типизация + MV для ошибок)
+- `sql/ddl/ods/20_ods.sql` — ODS: типизированные таблицы и `*_errors` (наполняются batch, не MV)
 - `sql/ddl/dds/30_dds.sql` — DDS (таблицы для batch-загрузки)
 - `sql/ddl/dm/40_dm.sql` — DM (витрины VIEW)
-- `sql/dds/30_ods_to_dds.sql` — ODS -> DDS (argMax + JOIN)
-- `sql/dm/40_dds_to_dm.sql` — обновление `dq_summary`
 
-### Скрипты
+Трансформации (наполнение, шаги `etl_pipeline`):
+
+- `sql/ods/20_stg_to_ods.sql` — STG -> ODS: типизация + DQ-split (валидный ключ → `ods.*`, любая ошибка → `ods.*_errors`)
+- `sql/dds/30_ods_to_dds.sql` — ODS -> DDS (argMax + LEFT JOIN)
+- `sql/dm/40_dds_to_dm.sql` — DDS -> DM: пересборка `dm.dq_summary` (TRUNCATE+INSERT) по всем слоям; сами витрины `dm.v_*` — это VIEW из DDL
+
+### Superset
+
+- `superset/init_superset.py` — подключение к ClickHouse + создание датасетов
+- `superset/create_dashboard.py` — сборка дашборда с чартами
+
+### Скрипты (запасной путь, не основной)
+
+Shell-скрипты `scripts/*` (и обёртки `make ddl`/`make data`/`make transform`) — это локальный fallback в обход Airflow. Основной путь запуска — DAG-и Airflow (см. выше).
 
 - `scripts/apply_clickhouse_ddl.sh` — применение DDL
 - `scripts/load_kafka_data.sh` — загрузка в Kafka
@@ -48,8 +63,12 @@
 - `README.md` — быстрый старт и обзор проекта
 - `docs/ARCHITECTURE.md` — техническая архитектура
 - `docs/OPERATIONS.md` — запуск, проверки, troubleshooting
+- `docs/SUPERSET_DASHBOARD.md` — настройка и использование дашборда Superset
 - `docs/DE-task.md` — исходное задание
 - `docs/COMMIT_RULES.md` — правила коммитов
+- `docs/course/` — продвинутый учебный курс на базе стенда (PRD, план, уроки)
+- `docs/adr/` — архитектурные решения (ADR)
+- `docs/agents/` — контракты для агентских скиллов (issue-tracker, triage, domain)
 
 ## Legacy-планы
 

@@ -1,6 +1,6 @@
 .PHONY: up down clean ddl data transform logs \
         reload-monitoring recover-monitoring \
-        superset-init superset-dashboard superset-export superset-ui superset-restart
+        superset-init superset-dashboard superset-ui superset-restart
 
 COMPOSE ?= docker compose
 
@@ -76,10 +76,6 @@ superset-init:
 # Создание дашборда с чартами
 superset-dashboard:
 	$(COMPOSE) exec -T superset bash -c "python /app/superset_init/create_dashboard.py"
-
-# Экспорт дашборда в JSON
-superset-export:
-	$(COMPOSE) exec -T superset bash -c "python /app/superset_init/export_dashboard.py"
 
 # Открыть Superset UI
 superset-ui:

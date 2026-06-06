@@ -22,13 +22,14 @@
 
 Порты задаются в `docker-compose.yml`:
 
-- ClickHouse native: `localhost:8002`
-- ClickHouse HTTP: `localhost:9123`
+- ClickHouse native: `localhost:8002` (пользователь `default`, пароль `123456`)
+- ClickHouse HTTP / play-консоль: `http://localhost:9123/play` (`default` / `123456`)
 - Kafka: `localhost:9092`
 - Kafka UI: `http://localhost:8082`
 - Airflow: `http://localhost:8080` (`admin/admin`)
+- Superset: `http://localhost:8088` (`admin/admin`)
 - Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
+- Grafana: `http://localhost:3000` (`admin/admin`)
 
 ## Airflow DAGs
 
@@ -57,7 +58,9 @@
 ### `etl_pipeline`
 
 - Запуск: ручной (`Trigger DAG with config`)
-- Параметр: `full_refresh` (`bool`, default `true`) — очистить DDS перед загрузкой
+- Параметры:
+  - `full_refresh` (`bool`, default `true`) — очистить DDS перед загрузкой
+  - `wait_stg_timeout_sec` (`int`, default `600`, minimum `30`) — сколько секунд задача `wait_for_stg_data` ждёт появления данных в STG, прежде чем упасть по таймауту
 - Зависимость: требует наличия данных в STG (от `kafka_load` или `make data`)
 - Гейт целостности DDS: `check_dds_integrity` считает события без клика, а
   `assert_dds_integrity` роняет DAG при `orphan_events > 0`. Проверка идёт после
