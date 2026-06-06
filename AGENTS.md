@@ -52,6 +52,7 @@ Single-context: `CONTEXT.md` и `docs/adr/` в корне репозитория
 - [docs/COMMIT_RULES.md](./docs/COMMIT_RULES.md) — правила оформления коммитов.
 - [docs/course/](./docs/course/) — продвинутый учебный курс «со звёздочкой» на базе стенда (PRD, план обучения, стандарт уроков); начинать с [docs/course/README.md](./docs/course/README.md).
 - [plans/](./plans/) — legacy-планы (использовать как исторический контекст, не как источник истины).
+- `.scratch/handoffs/YYYY-MM-DD-<slug>.md` — handoff'ы для продолжения работы в новой сессии (одноразовые, коммитятся, уборка best-effort; скилл `handoff` пишет сюда). См. [docs/adr/0003-handoffs-in-scratch.md](./docs/adr/0003-handoffs-in-scratch.md).
 
 ## Ограничения по структуре
 
