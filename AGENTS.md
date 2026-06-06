@@ -27,6 +27,22 @@
 - Минимальный порядок: `resolve-library-id` -> `query-docs`.
 - Принятое решение фиксировать в коде и/или документации (кратко: что проверили и почему выбрали именно этот вариант).
 
+## Agent skills
+
+Конфигурация для инженерных скиллов (набор Matt Pocock). Подробности — в `docs/agents/`.
+
+### Issue tracker
+
+Локальный markdown: задачи и PRD живут файлами в `.scratch/<feature>/` (коммитятся, `.scratch/` не в `.gitignore`). GitHub Issues не используются. См. `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Пять канонических ролей, строки совпадают с именами (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). См. `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` и `docs/adr/` в корне репозитория. См. `docs/agents/domain.md`.
+
 ## Навигация по документации
 
 - [README.md](./README.md) — пользовательский quick start и обзор.
@@ -34,7 +50,9 @@
 - [docs/OPERATIONS.md](./docs/OPERATIONS.md) — запуск, DAG-параметры, проверки и troubleshooting.
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — детали по слоям STG/ODS/DDS/DM.
 - [docs/COMMIT_RULES.md](./docs/COMMIT_RULES.md) — правила оформления коммитов.
+- [docs/course/](./docs/course/) — продвинутый учебный курс «со звёздочкой» на базе стенда (PRD, план обучения, стандарт уроков); начинать с [docs/course/README.md](./docs/course/README.md).
 - [plans/](./plans/) — legacy-планы (использовать как исторический контекст, не как источник истины).
+- `.scratch/handoffs/YYYY-MM-DD-<slug>.md` — handoff'ы для продолжения работы в новой сессии (одноразовые, коммитятся, уборка best-effort; скилл `handoff` пишет сюда). См. [docs/adr/0003-handoffs-in-scratch.md](./docs/adr/0003-handoffs-in-scratch.md).
 
 ## Ограничения по структуре
 

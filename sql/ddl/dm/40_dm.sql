@@ -139,7 +139,9 @@ SELECT
     arrayDistinct(groupArray(page_url_path)) AS pages_visited,  -- Уникальные страницы
     arrayDistinct(groupArray(geo_country)) AS countries,        -- Страны (если менялась)
     arrayDistinct(groupArray(device_type)) AS devices,          -- Устройства (если менялось)
-    -- Берём последние UTM-метки сессии (для атрибуции)
+    -- Берём одну UTM-метку сессии (для атрибуции).
+    -- groupArraySample(1, 1919) выбирает 1 случайный элемент; 1919 — фиксированный seed,
+    -- чтобы выборка была воспроизводимой между прогонами (одинаковый seed → один результат).
     groupArraySample(1, 1919)(utm_source)[1] AS utm_source_last,
     groupArraySample(1, 1919)(utm_medium)[1] AS utm_medium_last
 FROM dm.v_events_enriched

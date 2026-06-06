@@ -128,7 +128,7 @@ SELECT
     _topic AS kafka_topic,
     _partition AS kafka_partition,
     _offset AS kafka_offset,
-    fromUnixTimestamp64Milli(toInt64(_timestamp_ms)) AS kafka_ts,
+    _timestamp_ms AS kafka_ts,
     raw
 FROM stg.kafka_browser_raw;
 
@@ -140,7 +140,7 @@ SELECT
     _topic AS kafka_topic,
     _partition AS kafka_partition,
     _offset AS kafka_offset,
-    fromUnixTimestamp64Milli(toInt64(_timestamp_ms)) AS kafka_ts,
+    _timestamp_ms AS kafka_ts,
     raw
 FROM stg.kafka_location_raw;
 
@@ -152,7 +152,7 @@ SELECT
     _topic AS kafka_topic,
     _partition AS kafka_partition,
     _offset AS kafka_offset,
-    fromUnixTimestamp64Milli(toInt64(_timestamp_ms)) AS kafka_ts,
+    _timestamp_ms AS kafka_ts,
     raw
 FROM stg.kafka_device_raw;
 
@@ -164,6 +164,6 @@ SELECT
     _topic AS kafka_topic,
     _partition AS kafka_partition,
     _offset AS kafka_offset,
-    fromUnixTimestamp64Milli(toInt64(_timestamp_ms)) AS kafka_ts,
+    _timestamp_ms AS kafka_ts,
     raw
 FROM stg.kafka_geo_raw;

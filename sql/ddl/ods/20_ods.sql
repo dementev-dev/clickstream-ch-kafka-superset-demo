@@ -9,20 +9,8 @@
 --
 -- Важно:
 --   - Наполнение ODS выполняется batch-процессом из sql/ods/20_stg_to_ods.sql
---   - Materialized View STG → ODS в target-state не используются
+--     (а не Materialized View, как в STG): батч ради наблюдаемости пересчёта
 -- ============================================================================
-
--- ----------------------------------------------------------------------------
--- Удаляем legacy MV STG → ODS (если ранее были созданы)
--- ----------------------------------------------------------------------------
-DROP TABLE IF EXISTS stg.mv_browser_raw_to_ods;
-DROP TABLE IF EXISTS stg.mv_browser_raw_to_ods_errors;
-DROP TABLE IF EXISTS stg.mv_location_raw_to_ods;
-DROP TABLE IF EXISTS stg.mv_location_raw_to_ods_errors;
-DROP TABLE IF EXISTS stg.mv_device_raw_to_ods;
-DROP TABLE IF EXISTS stg.mv_device_raw_to_ods_errors;
-DROP TABLE IF EXISTS stg.mv_geo_raw_to_ods;
-DROP TABLE IF EXISTS stg.mv_geo_raw_to_ods_errors;
 
 -- ============================================================================
 -- BROWSER EVENTS
@@ -46,6 +34,8 @@ CREATE TABLE IF NOT EXISTS ods.browser_event
     parse_errors       Array(LowCardinality(String))       -- Ошибки парсинга (если есть)
 )
 ENGINE = ReplacingMergeTree(src_ingest_ts)
+-- Партиционируем по бизнес-дате события: у browser_event есть собственное время (event_ts).
+-- У click-контекста ниже (location/device/geo) такого времени нет — там партиция по дате загрузки.
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (event_id)
 SETTINGS allow_nullable_key = 1;
@@ -87,6 +77,7 @@ CREATE TABLE IF NOT EXISTS ods.location_event
     parse_errors   Array(LowCardinality(String))
 )
 ENGINE = ReplacingMergeTree(src_ingest_ts)
+-- По дате загрузки: у location нет собственного времени события (только время приёма в STG)
 PARTITION BY toYYYYMM(toDate(src_ingest_ts))
 ORDER BY (event_id)
 SETTINGS allow_nullable_key = 1;

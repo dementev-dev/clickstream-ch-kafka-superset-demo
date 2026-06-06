@@ -12,7 +12,7 @@
     python /app/superset_init/init_superset.py
 
 Важно:
-    Superset использует SQLite по умолчанию (не PostgreSQL).
+    Superset использует PostgreSQL metadata store через configs/superset_config.py.
     
     Текущий подход: 
     1. CLI для создания подключения к БД

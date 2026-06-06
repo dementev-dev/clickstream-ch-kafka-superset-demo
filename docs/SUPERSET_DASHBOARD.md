@@ -28,7 +28,7 @@ make transform
 # Автоматическая инициализация (создание подключения и датасетов)
 make superset-init
 
-# Создание дашборда с чартами
+# Создание дашборда с чартами; при необходимости обновляет metadata колонок датасетов
 make superset-dashboard
 ```
 
@@ -52,18 +52,24 @@ make superset-dashboard
 | **UTM Effectiveness** | `dm.v_utm_effectiveness` | Эффективность маркетинговых каналов |
 | **Top Pages** | `dm.v_top_pages_daily` | Популярность страниц |
 | **Session Overview** | `dm.v_session_overview` | Анализ сессий |
-| **DQ Summary** | `dm.dq_summary` | Качество данных |
+| **DQ Summary** | `dm.dq_summary` | Метрики по слоям (строки, ошибки, сироты) |
 
 ### Чарты (Charts)
 
 #### KPI-блок (верх дашборда)
 - **📊 Total Events** — общее количество событий
 - **👤 Unique Users** — уникальные пользователи
-- **🎯 Unique Sessions** — уникальные сессии (click_id)
-- **📈 Avg Events/Session** — среднее количество событий на сессию
+- **📈 Avg Events/Visit** — среднее количество событий на визит (`click_id`)
+- **🎯 Conversion to /confirmation** — доля просмотров `/confirmation` от просмотров `/home`
+
+KPI разложены в одну строку по 12-колоночной сетке Superset: четыре блока по 3 колонки.
+`Unique Sessions` не вынесен отдельной KPI-плиткой, потому что в демо-данных
+`user_domain_id` и `click_id` идут 1:1 и дают то же число, что `Unique Users`.
 
 #### Динамика трафика
-- **📅 Events by Hour** — линейный график событий по часам
+- **📅 Events over Time** — линейный график событий с 5-минутными бакетами
+  (все события стенда укладываются в ~50 минут, поэтому часовая гранулярность
+  давала бы всего 2 точки и прямую линию)
 - **📱 Traffic by Device** — pie chart распределения по устройствам
 
 #### География
@@ -71,19 +77,51 @@ make superset-dashboard
 
 #### Маркетинг
 - **🔗 UTM Effectiveness Table** — таблица эффективности UTM-меток
-- **📄 Top Pages** — bar chart топ-20 страниц
+- **🪜 Page Funnel** — funnel chart по просмотрам страниц, от `/home` к `/confirmation`
 
-#### Качество данных
-- **🔍 Data Quality Summary** — статистика по слоям STG/ODS/DDS
+> **Что проверили по Superset 4.1.2.** Через MCP Context7 проверили официальную
+> библиотеку `/apache/superset`; документация не дала точной строки `viz_type`.
+> В установленном Superset 4.1.2 дополнительно проверили bundled example
+> `Featured Charts/Funnel.yaml` и frontend assets: для воронки используется
+> `viz_type: funnel`, поэтому dashboard создаёт именно funnel chart.
+
+#### Прохождение строк по слоям
+- **🧱 Rows by Layer (event)** — `dist_bar` по `dm.dq_summary`: сколько строк
+  одного **event-зерна** в каждом слое конвейера `STG → ODS → DDS → DM`.
+
+> **Почему именно одно зерно, а не сумма по слою.** Чарт берёт по одной
+> канонической таблице на слой (`browser_raw → browser_event → event →
+> v_events_enriched`). Если суммировать `total_rows` по всем таблицам слоя,
+> в один столбец складываются таблицы разного зерна (события `1000` + визиты `99`
+> + пустые error-таблицы) и получается **ложная «воронка потерь»**, которой нет.
+> На одном зерне убывание становится настоящим: видимый шаг **1050 → 1000** —
+> это дедупликация at-least-once потока по `event_id` в ODS
+> (`ReplacingMergeTree`), а дальше число стабильно до витрины.
+>
+> Настоящие сигналы качества (`rows_with_errors` в ODS, `orphan_events` в DDS)
+> на чистых демо-данных равны нулю и живут в `dm.dq_summary` отдельными
+> `check_name` — их разбирают уроки 3–4, а не этот чарт.
+
+> **Порядок столбцов.** В groupby подпись слоя получает числовой префикс
+> (`1 · stg`, `2 · ods`, …), а `order_bars` сортирует бары по подписи — иначе
+> `dist_bar` ставит их по убыванию значения, а не по порядку конвейера.
 
 ### Фильтры (Native Filters)
 
 | Фильтр | Поле | Тип | Применение |
 |--------|------|-----|------------|
-| 📅 Date Range | `event_date` | Time Range | Все чарты |
-| 🌍 Country | `geo_country` | Multi-select | Все чарты |
-| 📱 Device Type | `device_type` | Multi-select | Все чарты |
-| 🌐 Browser | `browser_name` | Multi-select | Все чарты |
+| 📅 Date Range | `event_date` | Time Range | Charts с `event_date`; по умолчанию `No filter`, чтобы демо-данные 2022 года не скрывались |
+| 🌍 Country | `geo_country` | Multi-select | Charts на `dm.v_events_enriched` |
+| 📱 Device Type | `device_type` | Multi-select | Charts на `dm.v_events_enriched` |
+| 🌐 Browser | `browser_name` | Multi-select | Charts на `dm.v_events_enriched` |
+
+Фильтры работают через левую панель Superset. Click-to-filter между виджетами не включен:
+клик по сектору pie chart, карте, строке таблицы или funnel не меняет остальные charts.
+
+Фильтр применяется только к charts, где есть нужное поле. Агрегированные витрины
+`dm.v_utm_effectiveness` и `dm.v_top_pages_daily` содержат `event_date`, но не содержат
+`geo_country`, `device_type` и `browser_name`. `dm.dq_summary` использует `check_date`;
+бизнес-фильтры на него не рассчитаны.
 
 ---
 
@@ -104,7 +142,6 @@ make transform   # Запуск batch-процесса
 # Superset
 make superset-init      # Инициализация (подключение + датасеты)
 make superset-dashboard # Создание дашборда
-make superset-export    # Экспорт дашборда в JSON
 make superset-ui        # Показать URL и логин
 make superset-restart   # Перезапуск сервиса
 ```
@@ -157,22 +194,16 @@ python /app/superset_init/init_superset.py
 
 ---
 
-## Экспорт и импорт дашборда
+## Импорт дашборда
 
-### Экспорт
-
-```bash
-# Автоматический экспорт в JSON
-make superset-export
-
-# Результат: superset/dashboards/ecommerce_analytics.json
-```
-
-### Импорт
+Основной способ собрать дашборд — `make superset-dashboard` (скрипт `create_dashboard.py`).
+Готовый экспорт дашборда лежит в репозитории на случай ручного импорта:
+`superset/dashboards/ecommerce_analytics.zip.json` (внутри контейнера —
+`/app/superset_init/dashboards/ecommerce_analytics.zip.json`).
 
 ```bash
 # Импорт через CLI
-docker compose exec superset superset import-dashboards -p /app/superset_init/dashboards/ecommerce_analytics.json
+docker compose exec superset superset import-dashboards -p /app/superset_init/dashboards/ecommerce_analytics.zip.json
 
 # Или через UI: Settings → Import Dashboards
 ```
@@ -217,7 +248,11 @@ make superset-restart
 # Полная переинициализация
 docker compose down -v
 docker compose up -d
+make ddl
+make data
+make transform
 make superset-init
+make superset-dashboard
 ```
 
 ### Нет данных в чартах
@@ -247,7 +282,7 @@ docker compose exec superset bash -c "curl clickhouse:8123"
 | Сервис | URL | Логин/Пароль |
 |--------|-----|--------------|
 | Superset | http://localhost:8088 | admin / admin |
-| ClickHouse HTTP | http://localhost:9123 | default / (пустой) |
+| ClickHouse HTTP | http://localhost:9123 | default / 123456 |
 | Airflow | http://localhost:8080 | admin / admin |
 | Grafana | http://localhost:3000 | admin / admin |
 | Prometheus | http://localhost:9090 | - |

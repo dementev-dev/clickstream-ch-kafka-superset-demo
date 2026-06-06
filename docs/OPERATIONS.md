@@ -10,7 +10,7 @@
 - `make down` (остановить и удалить контейнеры/сети проекта)
 - `make clean` (полная очистка: `down -v --remove-orphans`)
 - `make ddl` (применяет SQL из `sql/ddl/00_databases.sql` и `sql/ddl/*/*.sql` в ClickHouse)
-- `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
+- `make data` (пересоздаёт топики и заливает данные в Kafka; по умолчанию полный объём, срез — `LIMIT=50 make data`)
 - `make transform` (запускает batch-процесс ODS -> DDS -> DM)
 - `make superset-init` (повторная инициализация Superset: подключение к ClickHouse, датасеты, дашборд)
 - `docker compose ps`
@@ -22,13 +22,14 @@
 
 Порты задаются в `docker-compose.yml`:
 
-- ClickHouse native: `localhost:8002`
-- ClickHouse HTTP: `localhost:9123`
+- ClickHouse native: `localhost:8002` (пользователь `default`, пароль `123456`)
+- ClickHouse HTTP / play-консоль: `http://localhost:9123/play` (`default` / `123456`)
 - Kafka: `localhost:9092`
 - Kafka UI: `http://localhost:8082`
 - Airflow: `http://localhost:8080` (`admin/admin`)
+- Superset: `http://localhost:8088` (`admin/admin`)
 - Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
+- Grafana: `http://localhost:3000` (`admin/admin`)
 
 ## Airflow DAGs
 
@@ -57,8 +58,15 @@
 ### `etl_pipeline`
 
 - Запуск: ручной (`Trigger DAG with config`)
-- Параметр: `full_refresh` (`bool`, default `true`) — очистить DDS перед загрузкой
+- Параметры:
+  - `full_refresh` (`bool`, default `true`) — очистить DDS перед загрузкой
+  - `wait_stg_timeout_sec` (`int`, default `600`, minimum `30`) — сколько секунд задача `wait_for_stg_data` ждёт появления данных в STG, прежде чем упасть по таймауту
 - Зависимость: требует наличия данных в STG (от `kafka_load` или `make data`)
+- Гейт целостности DDS: `check_dds_integrity` считает события без клика, а
+  `assert_dds_integrity` роняет DAG при `orphan_events > 0`. Проверка идёт после
+  `load_dds` и до `load_dm_summary`, чтобы DM не собирался поверх нарушенной связи
+  `dds.event -> dds.click`. Для `assert_dds_integrity` задано `retries=0`: повтор не
+  чинит уже собранную сироту и только задерживает явный failed-статус.
 
 ## Рекомендуемый сценарий (фаза 2)
 
@@ -183,8 +191,8 @@ URL: `http://localhost:3000/d/clickhouse-overview/clickhouse-overview`
 | Раздел | Метрики |
 |--------|---------|
 | System Health | CPU Usage, Memory Resident, Memory Code |
-| Query Performance | Queries/sec, Active Queries, Failed Queries, Total Queries, Inserted Rows/sec |
-| MergeTree Storage | Total Parts, Parts by State, Total Merges, Merges/sec |
+| Query Performance | Queries per Second, Active Queries, Failed Queries (total), Total Queries, Inserted Rows/sec |
+| MergeTree Storage | Total Parts, Parts by State, Total Merges, Merges per Second |
 
 Принятое решение по метрикам: сверили naming через Context7 (`/clickhouse/clickhouse-docs`, раздел Prometheus interface) и заменили недоступные в `25.1` серии на фактически экспортируемые (`ClickHouseProfileEvents_InsertedRows`, `ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables`, `ClickHouseMetrics_Parts*`).
 
@@ -194,10 +202,10 @@ URL: `http://localhost:3000/d/kafka-overview/kafka-overview`
 
 | Раздел | Метрики |
 |--------|---------|
-| Cluster Health | Brokers Up, Topics Count, Total Partitions, Consumer Groups |
-| Throughput | Messages In/sec by Topic |
-| Consumers | Consumer Lag by Group, Consumer Lag Table |
-| Partitions | Partition Offsets (Current), Oldest vs Current Offset Gap |
+| Cluster Health | Brokers Up, Topics, Total Partitions, Consumer Groups |
+| Throughput | Messages In / sec by Topic |
+| Consumers | Consumer Lag by Group |
+| Partitions | Partition Offsets (Current) |
 
 **Источник метрик:** `kafka-exporter` (danielqsj/kafka-exporter), формат конфигурации подтверждён через Context7 (`/danielqsj/kafka_exporter`, `/prometheus/docs`).
 

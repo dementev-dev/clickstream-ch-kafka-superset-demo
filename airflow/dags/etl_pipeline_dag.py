@@ -1,6 +1,9 @@
 """
 DAG ETL-процесса STG -> ODS -> DDS -> DM для учебного проекта.
 
+Поток задач:
+  precheck -> transform: wait -> ods -> dq -> branch -> dds -> integrity -> dm -> validate
+
 Принципы реализации:
 - SQL выполняется явными task на ClickHouseOperator;
 - SQL-файлы вызываются по фиксированным путям;
@@ -9,7 +12,6 @@ DAG ETL-процесса STG -> ODS -> DDS -> DM для учебного про�
 
 from __future__ import annotations
 
-import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,6 +25,8 @@ from airflow.utils.task_group import TaskGroup
 from airflow.utils.trigger_rule import TriggerRule
 from airflow_clickhouse_plugin.hooks.clickhouse import ClickHouseHook
 from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
+from utils.airflow_params import parse_bool_param
+from utils.sql_helpers import load_sql_statements as load_sql_file_statements
 
 
 # -----------------------------------------------------------------------------
@@ -58,23 +62,7 @@ SQL_ROOT = resolve_sql_root()
 
 def load_sql_statements(relative_path: str) -> tuple[str, ...]:
     """Читает SQL-файл и делит его на отдельные команды по ';'."""
-    file_path = SQL_ROOT / relative_path
-    if not file_path.is_file():
-        raise AirflowException(f"SQL-файл не найден: {file_path}")
-
-    sql_text = file_path.read_text(encoding="utf-8")
-    statements: list[str] = []
-    for segment in sql_text.split(";"):
-        # Убираем блочные и строковые комментарии, чтобы не отправлять "пустые" запросы.
-        no_block_comments = re.sub(r"/\*.*?\*/", "", segment, flags=re.S)
-        lines = [line for line in no_block_comments.splitlines() if not line.strip().startswith("--")]
-        cleaned = "\n".join(lines).strip()
-        if cleaned:
-            statements.append(cleaned)
-
-    if not statements:
-        raise AirflowException(f"SQL-файл пустой: {file_path}")
-    return tuple(statements)
+    return load_sql_file_statements(SQL_ROOT, relative_path)
 
 
 # -----------------------------------------------------------------------------
@@ -228,7 +216,10 @@ def choose_full_refresh(**context) -> str:
     """Ветвление: делать TRUNCATE DDS или пропустить."""
     dag_run = context.get("dag_run")
     conf = dag_run.conf if dag_run else {}
-    full_refresh = bool(conf.get("full_refresh", context["params"]["full_refresh"]))
+    full_refresh = parse_bool_param(
+        conf.get("full_refresh", context["params"]["full_refresh"]),
+        "full_refresh",
+    )
     return "transform.truncate_dds_click" if full_refresh else "transform.skip_truncate"
 
 
@@ -243,6 +234,22 @@ def assert_dm_summary_not_empty(**context) -> None:
     dq_rows = int(result[0][0])
     if dq_rows <= 0:
         raise AirflowException("dm.dq_summary пуста после load_dm_summary.")
+
+
+def assert_dds_integrity(**context) -> None:
+    """Падает, если события ссылаются на отсутствующие клики."""
+    ti = context["ti"]
+    result = ti.xcom_pull(task_ids="transform.check_dds_integrity")
+
+    if not result or not result[0] or len(result[0]) != 1:
+        raise AirflowException(f"Некорректный результат check_dds_integrity: {result}")
+
+    orphan_events = int(result[0][0])
+    if orphan_events > 0:
+        raise AirflowException(
+            f"DDS integrity check failed: orphan_events={orphan_events}. "
+            "Есть события, чей click_id отсутствует в dds.click."
+        )
 
 
 with DAG(
@@ -342,6 +349,12 @@ with DAG(
             database="default",
         )
 
+        assert_dds_integrity_task = PythonOperator(
+            task_id="assert_dds_integrity",
+            python_callable=assert_dds_integrity,
+            retries=0,
+        )
+
         load_dm_summary = ClickHouseOperator(
             task_id="load_dm_summary",
             sql=load_sql_statements("dm/40_dds_to_dm.sql"),
@@ -364,6 +377,14 @@ with DAG(
         wait_for_stg_data_task >> load_ods >> check_ods_quality >> choose_refresh_mode
         choose_refresh_mode >> truncate_dds_click >> truncate_dds_event >> truncate_complete
         choose_refresh_mode >> skip_truncate >> truncate_complete
-        truncate_complete >> load_dds >> check_dds_integrity >> load_dm_summary >> validate_dm_summary_sql >> validate_dm_summary
+        (
+            truncate_complete
+            >> load_dds
+            >> check_dds_integrity
+            >> assert_dds_integrity_task
+            >> load_dm_summary
+            >> validate_dm_summary_sql
+            >> validate_dm_summary
+        )
 
     precheck >> transform

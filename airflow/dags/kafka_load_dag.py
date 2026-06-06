@@ -24,6 +24,7 @@ from airflow.operators.python import PythonOperator
 from airflow.utils.task_group import TaskGroup
 
 # Импортируем helper-функции
+from utils.airflow_params import parse_bool_param
 from utils.kafka_helpers import (
     check_input_files,
     check_kafka_ready,
@@ -69,7 +70,10 @@ def _validate_params(**context) -> None:
 def _prepare_topics(**context) -> None:
     """Подготовка топиков Kafka (создание/сброс)."""
     conf = context.get("dag_run", {}).conf or {}
-    reset_topics = bool(conf.get("reset_topics", context["params"]["reset_topics"]))
+    reset_topics = parse_bool_param(
+        conf.get("reset_topics", context["params"]["reset_topics"]),
+        "reset_topics",
+    )
 
     prepare_topics(reset=reset_topics)
 
