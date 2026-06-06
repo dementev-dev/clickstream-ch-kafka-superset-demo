@@ -10,7 +10,7 @@
 - `make down` (остановить и удалить контейнеры/сети проекта)
 - `make clean` (полная очистка: `down -v --remove-orphans`)
 - `make ddl` (применяет SQL из `sql/ddl/00_databases.sql` и `sql/ddl/*/*.sql` в ClickHouse)
-- `make data` (пересоздаёт топики и заливает небольшой срез данных в Kafka; полный режим — `FULL=1 make data`)
+- `make data` (пересоздаёт топики и заливает данные в Kafka; по умолчанию полный объём, срез — `LIMIT=50 make data`)
 - `make transform` (запускает batch-процесс ODS -> DDS -> DM)
 - `make superset-init` (повторная инициализация Superset: подключение к ClickHouse, датасеты, дашборд)
 - `docker compose ps`

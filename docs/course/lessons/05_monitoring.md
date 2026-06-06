@@ -270,7 +270,7 @@ Grafana.
 Открой Grafana → **Airflow Overview** и найди панель **Scheduler Heartbeat Rate**.
 
 Потом открой **Alerting → Alert rules** и найди правило `Airflow Scheduler Down`. Перед
-экспериментом оно должно быть не в `Alerting`.
+экспериментом оно должно быть в состоянии `Normal` (не `Alerting`).
 
 Можно проверить и командой:
 
