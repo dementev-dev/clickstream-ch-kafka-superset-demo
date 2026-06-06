@@ -271,7 +271,7 @@ make superset-dashboard
 | Блок | Чарты | Датасет |
 |------|-------|---------|
 | **KPI** | Total Events, Unique Users, Avg Events/Visit, Conversion to /confirmation | `v_events_enriched` |
-| **Динамика** | Events by Hour (timeline), Traffic by Device (pie) | `v_events_enriched` |
+| **Динамика** | Events over Time (timeline), Traffic by Device (pie) | `v_events_enriched` |
 | **География** | Geography Map по странам | `v_events_enriched` |
 | **Маркетинг** | UTM Effectiveness Table, Page Funnel | `v_utm_effectiveness`, `v_top_pages_daily` |
 | **Слои** | Rows by Layer (event) — прохождение строк STG→ODS→DDS→DM | `dq_summary` |

@@ -118,7 +118,7 @@ http://localhost:8088/superset/dashboard/1/
 
 - KPI сверху: `Total Events`, `Unique Users`, `Avg Events/Visit`,
   `Conversion to /confirmation`;
-- динамика: `Events by Hour`, `Traffic by Device`;
+- динамика: `Events over Time`, `Traffic by Device`;
 - география: `Geography Map`;
 - маркетинг: `UTM Effectiveness Table`, `Page Funnel`;
 - прохождение строк по слоям: `Rows by Layer (event)`.

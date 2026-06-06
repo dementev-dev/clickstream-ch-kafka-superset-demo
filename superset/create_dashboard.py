@@ -103,12 +103,17 @@ CHARTS_CONFIG = [
     },
     # Динамика
     {
-        "slice_name": "📅 Events by Hour",
+        "slice_name": "📅 Events over Time",
+        "previous_slice_names": ["📅 Events by Hour"],
+        # Все события стенда укладываются в ~50 минут (20:51–21:41 28.11.2022),
+        # поэтому часовая гранулярность давала всего 2 точки и прямую линию,
+        # читавшуюся как ошибка. 5-минутные бакеты дают ~10 точек — реальную
+        # форму трафика. Поэтому и название не «by Hour», а «over Time».
         "viz_type": "echarts_timeseries_line",
         "dataset_name": "v_events_enriched",
         "params": {
             "granularity_sqla": "event_ts",
-            "time_grain_sqla": "PT1H",
+            "time_grain_sqla": "PT5M",
             "metrics": [
                 {
                     "expressionType": "SQL",
@@ -283,7 +288,7 @@ DASHBOARD_ROWS = [
     [("📊 Total Events", 3), ("👤 Unique Users", 3),
      ("📈 Avg Events/Visit", 3), ("🎯 Conversion to /confirmation", 3)],
     # Динамика во времени + разрез по устройствам
-    [("📅 Events by Hour", 8), ("📱 Traffic by Device", 4)],
+    [("📅 Events over Time", 8), ("📱 Traffic by Device", 4)],
     # География + эффективность маркетинговых каналов
     [("🌍 Geography Map", 6), ("🔗 UTM Effectiveness Table", 6)],
     # Популярные страницы + прохождение строк по слоям
