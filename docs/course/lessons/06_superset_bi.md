@@ -323,6 +323,13 @@ Native filters создаются в `build_dashboard_metadata`. Там есть
 - `Device Type` по `device_type`;
 - `Browser` по `browser_name`.
 
+Эти фильтры задаются в левой панели dashboard. Click-to-filter между виджетами не включен:
+клик по сектору pie chart, карте, строке таблицы или funnel не меняет остальные charts.
+
+Фильтр применяется только к charts, где есть нужное поле. `Country`, `Device Type` и
+`Browser` работают с charts на `dm.v_events_enriched`; агрегированные витрины для UTM,
+page funnel и DQ не содержат все эти измерения.
+
 > **Что проверили по API.** Перед уроком Superset сверили через MCP Context7 (`/apache/superset`):
 > в Superset есть отдельные сущности charts и dashboards, metadata хранится отдельно от
 > подключаемых источников данных. Для `funnel` Context7 не дал точную строку `viz_type`, поэтому

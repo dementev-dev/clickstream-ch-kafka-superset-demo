@@ -279,6 +279,11 @@ make superset-dashboard
 Фильтр `Date Range` по умолчанию открыт как `No filter`, потому что демо-данные лежат в
 историческом диапазоне (`2022-11-28`).
 
+Фильтры Superset задаются в левой панели dashboard. Click-to-filter по виджетам не включен:
+клики по pie chart, карте, таблице или funnel не меняют другие charts. `Country`,
+`Device Type` и `Browser` применяются к charts на `dm.v_events_enriched`; `Date Range`
+работает с charts, где есть `event_date`.
+
 ### Архитектура Superset
 
 ```
