@@ -1,8 +1,8 @@
 # Редизайн KPI-полосы и состава чартов дашборда «E-commerce Analytics»
 
 Дата: 2026-06-06
-Статус: Accepted (не реализовано — код `superset/create_dashboard.py` правится
-отдельным заходом на реализацию)
+Статус: Implemented (`superset/create_dashboard.py`, `docs/SUPERSET_DASHBOARD.md`,
+`docs/course/lessons/06_superset_bi.md`)
 Связано: [`CONTEXT.md`](../../CONTEXT.md), [ADR-0002](../adr/0002-specs-as-durable-design-docs.md),
 урок [`docs/course/lessons/06_superset_bi.md`](../course/lessons/06_superset_bi.md)
 
@@ -141,11 +141,16 @@ KPI-полоса:
 
 ## Open questions
 
-- **Точная формула Conversion:** доля визитов с ≥1 pageview `/confirmation`, или
-  просмотры `/confirmation` / просмотры `/home`? Влияет на число (~8%) и на то,
-  что именно учим (визит-конверсия vs page-to-page).
-- **Events by Hour** — оставляем ли (зависит от проверки на пустоту на полных
-  данных: разброс `event_ts` по часам).
+- **Resolved: точная формула Conversion.** Используем page-funnel conversion:
+  `countIf(page_url_path = '/confirmation') / countIf(page_url_path = '/home')`.
+  На полном датасете это `35 / 426 = 8.2%`. Визитовая формула даёт 25.3% и
+  отклонена, потому что KPI должен совпадать с логикой chart `Page Funnel`.
+- **Resolved: Events by Hour.** Оставляем: на полном датасете есть два часовых
+  бакета (`20 → 256`, `21 → 744`), график не пустой.
+- **Resolved: Funnel в Superset 4.1.2.** MCP Context7 по `/apache/superset` не
+  дал точной строки `viz_type`; установленный Superset 4.1.2 проверен по bundled
+  example `Featured Charts/Funnel.yaml` и frontend assets. Используем
+  `viz_type: funnel`.
 - **Требования к будущему генератору**, вытекающие из упёртостей этих данных
   (разнообразие `event_type`, возвраты пользователей → sessions>users,
   реалистичная воронка) — при возврате к генератору перенести в его

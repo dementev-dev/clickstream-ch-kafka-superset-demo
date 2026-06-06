@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, '/app')
 
 
+OBSOLETE_CHART_NAMES = {
+    "🎯 Unique Sessions",
+}
+
+
 # Конфигурация чартов
 CHARTS_CONFIG = [
     # KPI блок
@@ -63,32 +68,36 @@ CHARTS_CONFIG = [
         }
     },
     {
-        "slice_name": "🎯 Unique Sessions",
-        "viz_type": "big_number_total",
-        "dataset_name": "v_events_enriched",
-        "params": {
-            "metric": {
-                "expressionType": "SQL",
-                "sqlExpression": "COUNT(DISTINCT click_id)",
-                "label": "Unique Sessions",
-                "optionName": "metric_3"
-            },
-            "y_axis_format": ",d",
-            "time_range": "No filter"
-        }
-    },
-    {
-        "slice_name": "📈 Avg Events/Session",
+        "slice_name": "📈 Avg Events/Visit",
+        "previous_slice_names": ["📈 Avg Events/Session"],
         "viz_type": "big_number_total",
         "dataset_name": "v_events_enriched",
         "params": {
             "metric": {
                 "expressionType": "SQL",
                 "sqlExpression": "COUNT(*) / COUNT(DISTINCT click_id)",
-                "label": "Avg Events/Session",
+                "label": "Avg Events/Visit",
                 "optionName": "metric_4"
             },
-            "y_axis_format": ".2f",
+            "y_axis_format": ".1f",
+            "time_range": "No filter"
+        }
+    },
+    {
+        "slice_name": "🎯 Conversion to /confirmation",
+        "viz_type": "big_number_total",
+        "dataset_name": "v_events_enriched",
+        "params": {
+            "metric": {
+                "expressionType": "SQL",
+                "sqlExpression": (
+                    "if(countIf(page_url_path = '/home') = 0, 0, "
+                    "countIf(page_url_path = '/confirmation') / countIf(page_url_path = '/home'))"
+                ),
+                "label": "Conversion to /confirmation",
+                "optionName": "metric_5"
+            },
+            "y_axis_format": ".1%",
             "time_range": "No filter"
         }
     },
@@ -175,18 +184,32 @@ CHARTS_CONFIG = [
         }
     },
     {
-        "slice_name": "📄 Top Pages",
-        "viz_type": "dist_bar",
+        "slice_name": "🪜 Page Funnel",
+        "previous_slice_names": ["📄 Top Pages"],
+        # В Superset 4.1.2 `funnel` есть в frontend-плагинах и примерах
+        # поставки, хотя legacy registry `superset.viz.viz_types` его не
+        # показывает. Параметры взяты из bundled Featured Charts/Funnel.yaml.
+        "viz_type": "funnel",
         "dataset_name": "v_top_pages_daily",
         "params": {
             "groupby": ["page_url_path"],
-            "metrics": [
-                {"expressionType": "SQL", "sqlExpression": "SUM(pageviews)", "label": "Pageviews"}
-            ],
+            "metric": {
+                "expressionType": "SQL",
+                "sqlExpression": "SUM(pageviews)",
+                "label": "Pageviews"
+            },
             "row_limit": 20,
             "time_range": "No filter",
-            "orientation": "vertical",
-            "show_legend": False
+            "sort_by_metric": True,
+            "percent_calculation_type": "first_step",
+            "color_scheme": "supersetColors",
+            "show_legend": True,
+            "legendOrientation": "top",
+            "legendMargin": 50,
+            "tooltip_label_type": 5,
+            "number_format": "SMART_NUMBER",
+            "show_labels": True,
+            "show_tooltip_labels": True
         }
     },
     # Качество данных
@@ -233,13 +256,13 @@ DASHBOARD_CONFIG = {
 DASHBOARD_ROWS = [
     # KPI-полоса: 4 числа в один ряд
     [("📊 Total Events", 3), ("👤 Unique Users", 3),
-     ("🎯 Unique Sessions", 3), ("📈 Avg Events/Session", 3)],
+     ("📈 Avg Events/Visit", 3), ("🎯 Conversion to /confirmation", 3)],
     # Динамика во времени + разрез по устройствам
     [("📅 Events by Hour", 8), ("📱 Traffic by Device", 4)],
     # География + эффективность маркетинговых каналов
     [("🌍 Geography Map", 6), ("🔗 UTM Effectiveness Table", 6)],
     # Популярные страницы + качество данных
-    [("📄 Top Pages", 6), ("🔍 Data Quality Summary", 6)],
+    [("🪜 Page Funnel", 6), ("🔍 Data Quality Summary", 6)],
 ]
 
 # Высота строки в grid-units Superset (одинаковая для всех чартов строки —
@@ -410,13 +433,17 @@ def main() -> bool:
                 params["viz_type"] = chart_config["viz_type"]
                 serialized_params = json.dumps(params)
 
-                # Проверяем, существует ли уже чарт
-                existing = db.session.query(Slice).filter_by(
-                    slice_name=chart_config["slice_name"]
-                ).first()
+                # Проверяем, существует ли уже чарт. Старые имена нужны для
+                # идемпотентного rename без дублей в списке Charts.
+                chart_names = [chart_config["slice_name"]]
+                chart_names.extend(chart_config.get("previous_slice_names", []))
+                existing = db.session.query(Slice).filter(
+                    Slice.slice_name.in_(chart_names)
+                ).order_by(Slice.id.asc()).first()
 
                 if existing:
                     # Синхронизируем параметры существующего чарта с конфигом.
+                    existing.slice_name = chart_config["slice_name"]
                     existing.viz_type = chart_config["viz_type"]
                     existing.datasource_id = dataset.id
                     existing.datasource_type = "table"
@@ -456,6 +483,15 @@ def main() -> bool:
                 db.session.rollback()
 
         logger.info(f"Created/Found {len(created_charts)} charts")
+
+        current_chart_names = {chart_config["slice_name"] for chart_config in CHARTS_CONFIG}
+        for obsolete_name in sorted(OBSOLETE_CHART_NAMES - current_chart_names):
+            obsolete_charts = db.session.query(Slice).filter_by(slice_name=obsolete_name).all()
+            for obsolete in obsolete_charts:
+                db.session.delete(obsolete)
+                logger.info("Deleted obsolete chart: %s (ID: %s)", obsolete_name, obsolete.id)
+        db.session.flush()
+
         metadata_json = build_dashboard_metadata(datasets_by_name.get("v_events_enriched"))
 
         # Создаём позиции чартов для layout.
