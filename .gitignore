@@ -171,3 +171,6 @@ $RECYCLE.BIN/
 *.msp
 *.lnk
 node_modules
+
+.playwright-cli
+.playwright-mcp
