@@ -212,28 +212,53 @@ CHARTS_CONFIG = [
             "show_tooltip_labels": True
         }
     },
-    # Качество данных
+    # Прохождение строк по слоям (lineage одного event-зерна)
     {
-        "slice_name": "🔍 Data Quality Summary",
+        "slice_name": "🧱 Rows by Layer (event)",
+        "previous_slice_names": ["🔍 Data Quality Summary"],
+        # Честный row-lineage одного event-зерна через слои stg→ods→dds→dm.
+        # Берём ПО ОДНОЙ канонической таблице на слой (browser_raw → browser_event
+        # → event → v_events_enriched). Прежний вариант суммировал total_rows по
+        # ВСЕМ таблицам слоя — таблицы разного зерна (события 1000 + визиты 99 +
+        # error-таблицы 0) складывались в один столбец и рисовали ложную «воронку
+        # потерь», которой нет. На одном зерне убывание становится настоящим:
+        # видимый шаг 1050→1000 — это дедупликация at-least-once потока по
+        # event_id в ODS (ReplacingMergeTree), а не потеря данных.
+        # Префикс "N · " в groupby задаёт порядок слоёв (order_bars сортирует по
+        # подписи), иначе бары встают по убыванию значения, а не по конвейеру.
         "viz_type": "dist_bar",
         "dataset_name": "dq_summary",
         "params": {
-            "groupby": ["layer"],
+            "groupby": [
+                {
+                    "expressionType": "SQL",
+                    "sqlExpression": (
+                        "multiIf(layer = 'stg', '1 · stg', layer = 'ods', '2 · ods', "
+                        "layer = 'dds', '3 · dds', '4 · dm')"
+                    ),
+                    "label": "Layer"
+                }
+            ],
             "metrics": [
-                {"expressionType": "SQL", "sqlExpression": "SUM(check_value)", "label": "Row Count"}
+                {"expressionType": "SQL", "sqlExpression": "SUM(check_value)", "label": "Rows"}
             ],
             "adhoc_filters": [
                 {
                     "clause": "WHERE",
                     "expressionType": "SQL",
-                    "sqlExpression": "check_name = 'total_rows'",
+                    "sqlExpression": (
+                        "check_name = 'total_rows' AND table_name IN "
+                        "('browser_raw', 'browser_event', 'event', 'v_events_enriched')"
+                    ),
                     "subject": None,
                     "operator": None,
                     "comparator": None
                 }
             ],
+            "order_bars": True,
             "row_limit": 100,
             "time_range": "No filter",
+            "y_axis_format": ",d",
             "show_legend": False
         }
     }
@@ -242,7 +267,7 @@ CHARTS_CONFIG = [
 # Конфигурация дашборда
 DASHBOARD_CONFIG = {
     "dashboard_title": "🛒 E-commerce Analytics Dashboard",
-    "description": "Аналитический дашборд для e-commerce кликстрима: трафик, конверсии, география и качество данных.",
+    "description": "Аналитический дашборд для e-commerce кликстрима: трафик, конверсии, география и прохождение строк по слоям.",
     "published": True,
     "slug": "ecommerce-analytics",
 }
@@ -261,8 +286,8 @@ DASHBOARD_ROWS = [
     [("📅 Events by Hour", 8), ("📱 Traffic by Device", 4)],
     # География + эффективность маркетинговых каналов
     [("🌍 Geography Map", 6), ("🔗 UTM Effectiveness Table", 6)],
-    # Популярные страницы + качество данных
-    [("🪜 Page Funnel", 6), ("🔍 Data Quality Summary", 6)],
+    # Популярные страницы + прохождение строк по слоям
+    [("🪜 Page Funnel", 6), ("🧱 Rows by Layer (event)", 6)],
 ]
 
 # Высота строки в grid-units Superset (одинаковая для всех чартов строки —

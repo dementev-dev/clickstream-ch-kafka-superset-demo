@@ -2,7 +2,7 @@
 -- Batch-трансформация: DDS → DM (Data Quality summary)
 -- ============================================================================
 -- Поток данных:
---   dds.click + dds.event + ods.* + stg.* → dm.dq_summary  (сводка по слоям)
+--   stg.* + ods.* + dds.* + dm.v_events_enriched → dm.dq_summary  (сводка по слоям)
 --   Сами витрины (dm.v_*) — это VIEW поверх DDS, создаются в sql/ddl/dm/40_dm.sql.
 --
 -- Что делает:
@@ -27,7 +27,7 @@
 CREATE TABLE IF NOT EXISTS dm.dq_summary
 (
     check_date Date,                    -- Дата проверки
-    layer LowCardinality(String),       -- Слой: stg, ods, dds
+    layer LowCardinality(String),       -- Слой: stg, ods, dds, dm
     table_name LowCardinality(String),  -- Имя таблицы
     check_name LowCardinality(String),  -- Тип проверки: total_rows, rows_with_errors и т.д.
     check_value UInt64                  -- Значение метрики
@@ -102,7 +102,14 @@ UNION ALL
 SELECT today(), 'dds', 'click', 'total_rows', count() FROM dds.click
 UNION ALL
 -- Считаем "осиротевшие" события (есть click_id, но нет такого click в dds.click)
-SELECT today(), 'dds', 'event_without_click', 'orphan_events', count() 
-FROM dds.event 
-WHERE click_id IS NOT NULL 
-  AND click_id NOT IN (SELECT click_id FROM dds.click);
+SELECT today(), 'dds', 'event_without_click', 'orphan_events', count()
+FROM dds.event
+WHERE click_id IS NOT NULL
+  AND click_id NOT IN (SELECT click_id FROM dds.click)
+
+UNION ALL
+-- DM-слой: финальная витрина событий (VIEW поверх dds.event).
+-- Нужна, чтобы lineage-чарт замыкал цепочку stg→ods→dds→dm на одном (event) зерне.
+-- VIEW создаётся в DDL (sql/ddl/dm/40_dm.sql) до трансформаций, а этот шаг идёт
+-- после наполнения dds.event — поэтому count() здесь корректен.
+SELECT today(), 'dm', 'v_events_enriched', 'total_rows', count() FROM dm.v_events_enriched;
