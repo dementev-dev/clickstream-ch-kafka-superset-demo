@@ -6,6 +6,7 @@ import logging
 import random
 from dataclasses import replace
 from datetime import datetime, timezone
+from time import sleep as real_sleep
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from generator import (
     Config,
     EventDictionary,
     EventGenerator,
+    EXPECTED_VISIT_EVENTS,
     GeneratorService,
     GeneratorState,
     KafkaBatchHistory,
@@ -100,6 +102,83 @@ class TestGeneratorServiceDisabled:
             service.start()
         
         assert "disabled" in caplog.text.lower() or "GEN_ENABLED" in caplog.text
+
+
+class TestGeneratorServiceSteadyStream:
+    """Проверки сервисного тика без настоящей Kafka."""
+
+    def test_service_ticks_publish_connected_multi_event_visit(self, base_config):
+        """Сервисные тики публикуют несколько связанных событий одного визита."""
+        config = replace(base_config, tick_seconds=1, max_session_events=3)
+        service = GeneratorService(config)
+        service.publisher = MagicMock()
+        service.publisher.publish.side_effect = (
+            lambda topic, events: (len(events), 0)
+        )
+        service.history = MagicMock()
+        service._running = True
+        sleep_calls = 0
+
+        def stop_after_second_tick(sleep_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                real_sleep(sleep_seconds)
+            else:
+                service._running = False
+
+        with patch.object(
+            service.generator,
+            "_calculate_events_count",
+            side_effect=[int(EXPECTED_VISIT_EVENTS), 0],
+        ), patch.object(
+            service.generator,
+            "_visit_pause_seconds",
+            return_value=0.05,
+        ), patch("clickstream_generator.service.time.sleep") as sleep_mock:
+            sleep_mock.side_effect = stop_after_second_tick
+
+            service._main_loop()
+
+        published = {}
+        for call in service.publisher.publish.call_args_list:
+            topic, events = call.args
+            published.setdefault(topic, []).extend(events)
+
+        browser_events = published["browser_events"]
+        location_events = published["location_events"]
+        device_events = published["device_events"]
+        geo_events = published["geo_events"]
+
+        assert set(published) == {
+            "browser_events",
+            "location_events",
+            "device_events",
+            "geo_events",
+        }
+        assert len(browser_events) >= 2
+        assert len({event["click_id"] for event in browser_events}) == 1
+        assert len({event["event_id"] for event in browser_events}) == len(browser_events)
+        assert {event["event_id"] for event in location_events} == {
+            event["event_id"]
+            for event in browser_events
+        }
+        assert {event["click_id"] for event in device_events} == {
+            browser_events[0]["click_id"]
+        }
+        assert {event["click_id"] for event in geo_events} == {
+            browser_events[0]["click_id"]
+        }
+
+        history_records = [
+            call.args[0]
+            for call in service.history.add.call_args_list
+        ]
+        assert [record.status for record in history_records] == ["success", "success"]
+        assert sum(record.sent_browser for record in history_records) == len(browser_events)
+        assert sum(record.sent_location for record in history_records) == len(location_events)
+        assert sum(record.sent_device for record in history_records) == len(device_events)
+        assert sum(record.sent_geo for record in history_records) == len(geo_events)
 
 
 class TestGeneratorServiceStateV2:

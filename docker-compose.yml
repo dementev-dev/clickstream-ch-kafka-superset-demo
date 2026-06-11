@@ -292,17 +292,23 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       # Режим steady-stream: короткие тики 1-10 сек (по умолчанию 5)
-      GEN_TICK_SECONDS: "5"
-      GEN_LAMBDA_BASE_PER_MIN: "30"
-      GEN_JITTER_PCT: "20"
-      GEN_MIN_EVENTS_PER_TICK: "1"
-      GEN_MAX_EVENTS_PER_TICK: "50"
+      GEN_TICK_SECONDS: ${GEN_TICK_SECONDS:-5}
+      GEN_LAMBDA_BASE_PER_MIN: ${GEN_LAMBDA_BASE_PER_MIN:-30}
+      GEN_JITTER_PCT: ${GEN_JITTER_PCT:-20}
+      GEN_MIN_EVENTS_PER_TICK: ${GEN_MIN_EVENTS_PER_TICK:-1}
+      GEN_MAX_EVENTS_PER_TICK: ${GEN_MAX_EVENTS_PER_TICK:-50}
+      GEN_MAX_SESSION_EVENTS: ${GEN_MAX_SESSION_EVENTS:-30}
+      GEN_MAX_ACTIVE_SESSIONS: ${GEN_MAX_ACTIVE_SESSIONS:-200}
+      GEN_POPULATION_MAX: ${GEN_POPULATION_MAX:-300}
+      GEN_P_NEW_USER: ${GEN_P_NEW_USER:-0.15}
+      GEN_MIN_RETURN_MINUTES: ${GEN_MIN_RETURN_MINUTES:-30}
       GEN_DATA_DIR: /data
-      GEN_ENABLED: "true"
-      GEN_METRICS_PORT: "9109"
-      # State management (сохранение состояния между рестартами)
-      GEN_STATE_ENABLED: "true"
-      GEN_STATE_RESET: "false"
+      GEN_SEED: ${GEN_SEED:-}
+      GEN_ENABLED: ${GEN_ENABLED:-true}
+      GEN_METRICS_PORT: ${GEN_METRICS_PORT:-9109}
+      # Сохранение состояния между рестартами
+      GEN_STATE_ENABLED: ${GEN_STATE_ENABLED:-true}
+      GEN_STATE_RESET: ${GEN_STATE_RESET:-false}
       # PYTHONUNBUFFERED для сразу видеть логи
       PYTHONUNBUFFERED: "1"
     ports:

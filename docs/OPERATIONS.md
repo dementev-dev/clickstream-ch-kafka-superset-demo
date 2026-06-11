@@ -97,6 +97,23 @@ make generator-logs
 | `GEN_JITTER_PCT` | Процент вариативности | `20` |
 | `GEN_MIN_EVENTS_PER_TICK` | Минимальный событийный бюджет тика | `1` |
 | `GEN_MAX_EVENTS_PER_TICK` | Максимальный событийный бюджет тика | `50` |
+| `GEN_MAX_SESSION_EVENTS` | Потолок длины одного визита | `30` |
+| `GEN_MAX_ACTIVE_SESSIONS` | Потолок одновременных активных визитов | `200` |
+| `GEN_POPULATION_MAX` | Потолок активной популяции пользователей | `300` |
+| `GEN_P_NEW_USER` | Доля визитов новых пользователей | `0.15` |
+| `GEN_MIN_RETURN_MINUTES` | Минимальная пауза перед возвратом пользователя | `30` |
+| `GEN_STATE_ENABLED` | Сохранять state v2 между рестартами | `true` |
+| `GEN_STATE_RESET` | Сбросить state при старте | `false` |
+
+В `docker-compose.yml` через окружение переопределяются демо-параметры модели и
+режима, например:
+
+```bash
+GEN_STATE_RESET=true GEN_LAMBDA_BASE_PER_MIN=60 docker compose up -d generator
+```
+
+Контейнерные `KAFKA_BOOTSTRAP_SERVERS` и `GEN_DATA_DIR` в compose оставлены
+внутренними значениями `kafka:29092` и `/data`.
 
 ### Топик истории
 
@@ -118,6 +135,8 @@ Prometheus метрики доступны на `http://localhost:9109/metrics`:
 - `generator_events_total` — счётчик отправленных событий
 - `generator_publish_errors_total` — ошибки публикации
 - `generator_tick_duration_seconds` — длительность тика
+- `generator_last_success_timestamp` — время последнего успешного или частично
+  успешного тика
 
 ### Мониторинг через Grafana
 
