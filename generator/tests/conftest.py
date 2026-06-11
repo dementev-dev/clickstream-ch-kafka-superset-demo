@@ -33,9 +33,9 @@ def base_config(data_dir):
     return Config(
         kafka_bootstrap_servers="localhost:9092",
         tick_seconds=5,
-        lambda_base_per_min=200,
+        lambda_base_per_min=30,
         jitter_pct=20,
-        min_events_per_tick=5,
+        min_events_per_tick=1,
         max_events_per_tick=50,
         data_dir=data_dir,
         seed=42,

@@ -22,49 +22,55 @@ PAGE_START_DISTRIBUTION = [
 
 PAGE_TRANSITIONS = {
     "/home": [
-        ("/home", 0.40),
+        ("/home", 0.41),
         ("/product_a", 0.28),
         ("/product_b", 0.18),
         ("/cart", 0.04),
-        (None, 0.10),
-    ],
-    "/product_a": [
-        ("/home", 0.30),
-        ("/product_a", 0.16),
-        ("/product_b", 0.18),
-        ("/cart", 0.27),
         (None, 0.09),
     ],
-    "/product_b": [
-        ("/home", 0.32),
-        ("/product_a", 0.15),
+    "/product_a": [
+        ("/home", 0.34),
+        ("/product_a", 0.13),
         ("/product_b", 0.18),
         ("/cart", 0.27),
         (None, 0.08),
+    ],
+    "/product_b": [
+        ("/home", 0.36),
+        ("/product_a", 0.15),
+        ("/product_b", 0.15),
+        ("/cart", 0.27),
+        (None, 0.07),
     ],
     "/cart": [
         ("/home", 0.20),
         ("/product_a", 0.12),
         ("/product_b", 0.10),
-        ("/cart", 0.10),
+        ("/cart", 0.11),
         ("/payment", 0.42),
-        (None, 0.06),
+        (None, 0.05),
     ],
     "/payment": [
         ("/home", 0.12),
         ("/cart", 0.24),
-        ("/payment", 0.12),
+        ("/payment", 0.14),
         ("/confirmation", 0.38),
-        (None, 0.14),
+        (None, 0.12),
     ],
     "/confirmation": [
-        ("/home", 0.35),
+        ("/home", 0.37),
         ("/product_a", 0.15),
         ("/product_b", 0.10),
         ("/confirmation", 0.05),
-        (None, 0.35),
+        (None, 0.33),
     ],
 }
+
+
+# Калибровочный ориентир из профиля сида: средний визит около 10 событий.
+# Тиковый слой использует это число, чтобы переводить событийный бюджет в
+# рождения визитов; тесты ниже защищают фактическую длину визита от дрейфа.
+EXPECTED_VISIT_EVENTS = 10.0
 
 
 class EventGenerator:
@@ -118,7 +124,7 @@ class EventGenerator:
 
     def _visit_pause_seconds(self) -> float:
         """Разыгрывает паузу между событиями визита."""
-        pause = self.rng.lognormvariate(math.log(45.0), 1.0)
+        pause = self.rng.lognormvariate(math.log(20.0), 0.9)
         return max(1.0, min(pause, 29 * 60.0))
 
     def _hour_factor(self) -> float:

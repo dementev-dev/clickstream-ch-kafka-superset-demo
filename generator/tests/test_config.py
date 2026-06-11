@@ -56,13 +56,24 @@ class TestConfigValidation:
     def test_valid_config_passes(self, base_config):
         """Валидная конфигурация создается без ошибок."""
         assert base_config.tick_seconds == 5
-        assert base_config.lambda_base_per_min == 200
+        assert base_config.lambda_base_per_min == 30
         assert base_config.jitter_pct == 20
         assert base_config.max_active_sessions < base_config.population_max
 
 
 class TestConfigDefaults:
     """Тесты значений по умолчанию."""
+
+    def test_default_lambda_base_per_min_is_calibrated_to_demo_scale(
+        self, monkeypatch, data_dir
+    ):
+        """По умолчанию целевая интенсивность равна 30 событиям в минуту."""
+        monkeypatch.setenv("GEN_DATA_DIR", str(data_dir))
+        monkeypatch.delenv("GEN_LAMBDA_BASE_PER_MIN", raising=False)
+
+        config = Config()
+
+        assert config.lambda_base_per_min == 30
 
     def test_default_tick_seconds_is_5(self, data_dir):
         """По умолчанию tick_seconds = 5 (rev5)."""
@@ -75,9 +86,9 @@ class TestConfigDefaults:
             config = Config(
                 kafka_bootstrap_servers="localhost:9092",
                 tick_seconds=int(os.getenv("GEN_TICK_SECONDS", "5")),
-                lambda_base_per_min=200,
+                lambda_base_per_min=30,
                 jitter_pct=20,
-                min_events_per_tick=5,
+                min_events_per_tick=1,
                 max_events_per_tick=50,
                 data_dir=data_dir,
                 seed=None,

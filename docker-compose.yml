@@ -293,9 +293,9 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       # Режим steady-stream: короткие тики 1-10 сек (по умолчанию 5)
       GEN_TICK_SECONDS: "5"
-      GEN_LAMBDA_BASE_PER_MIN: "200"
+      GEN_LAMBDA_BASE_PER_MIN: "30"
       GEN_JITTER_PCT: "20"
-      GEN_MIN_EVENTS_PER_TICK: "5"
+      GEN_MIN_EVENTS_PER_TICK: "1"
       GEN_MAX_EVENTS_PER_TICK: "50"
       GEN_DATA_DIR: /data
       GEN_ENABLED: "true"

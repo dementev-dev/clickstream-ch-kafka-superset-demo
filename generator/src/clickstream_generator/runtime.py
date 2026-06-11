@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from weakref import WeakKeyDictionary
 
-from clickstream_generator.generation import EventGenerator
+from clickstream_generator.generation import EXPECTED_VISIT_EVENTS, EventGenerator
 
 
 TOPICS = ("browser_events", "location_events", "device_events", "geo_events")
@@ -136,7 +136,7 @@ class TickStreamGenerator:
         self.generator = generator
         self.active_visits: list[ActiveVisit] = []
         self.population = UserPopulation(generator)
-        self._pending_event_budget = 0
+        self._pending_visit_births = 0.0
 
     @property
     def population_size(self) -> int:
@@ -165,18 +165,18 @@ class TickStreamGenerator:
 
     def _birth_visits(self, event_budget: int, tick_time: datetime) -> None:
         if len(self.active_visits) >= self.generator.config.max_active_sessions:
-            self._pending_event_budget = 0
+            self._pending_visit_births = 0.0
             return
 
-        self._pending_event_budget += max(0, event_budget)
+        self._pending_visit_births += max(0, event_budget) / EXPECTED_VISIT_EVENTS
 
         while (
-            self._pending_event_budget > 0
+            self._pending_visit_births >= 1.0
             and len(self.active_visits) < self.generator.config.max_active_sessions
         ):
             user = self.population.choose_for_visit(tick_time)
             if user is None:
-                self._pending_event_budget = 0
+                self._pending_visit_births = 0.0
                 return
 
             visit_batch = self.generator.generate_batch(
@@ -196,10 +196,10 @@ class TickStreamGenerator:
             self.active_visits.append(
                 ActiveVisit(batch=visit_batch, timestamps=timestamps, user=user)
             )
-            self._pending_event_budget -= len(timestamps)
+            self._pending_visit_births -= 1.0
 
         if len(self.active_visits) >= self.generator.config.max_active_sessions:
-            self._pending_event_budget = 0
+            self._pending_visit_births = 0.0
 
     def _release_due_events(
         self,

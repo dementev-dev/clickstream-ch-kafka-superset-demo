@@ -17,7 +17,7 @@ if str(SRC_DIR) not in sys.path:
 
 from clickstream_generator.config import Config
 from clickstream_generator.dictionary import EventDictionary
-from clickstream_generator.generation import EventGenerator
+from clickstream_generator.generation import EXPECTED_VISIT_EVENTS, EventGenerator
 from clickstream_generator.intensity import calculate_events_count, hour_factor
 from clickstream_generator.kafka_io import (
     BatchRecord,
@@ -50,6 +50,7 @@ __all__ = [
     "Config",
     "EventDictionary",
     "EventGenerator",
+    "EXPECTED_VISIT_EVENTS",
     "GeneratorService",
     "GeneratorState",
     "KafkaBatchHistory",

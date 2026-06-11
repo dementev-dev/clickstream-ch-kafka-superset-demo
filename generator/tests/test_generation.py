@@ -2,12 +2,20 @@
 Тесты генерации событий.
 """
 
+import random
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
-from generator import EventGenerator, EventDictionary, TickStreamGenerator, generate_tick_batch
+from generator import (
+    EventGenerator,
+    EventDictionary,
+    EXPECTED_VISIT_EVENTS,
+    TickStreamGenerator,
+    calculate_events_count,
+    generate_tick_batch,
+)
 
 
 ALLOWED_PAGE_PATHS = {
@@ -143,7 +151,7 @@ class TestEventGeneration:
     def test_tick_stream_keeps_long_window_intensity_near_event_budget(
         self, event_dictionary, base_config
     ):
-        """Длинное окно не разгоняется от событийного бюджета к бюджету визитов."""
+        """Длинное окно держит среднюю интенсивность около событийного бюджета."""
         config = replace(
             base_config,
             tick_seconds=5,
@@ -167,8 +175,35 @@ class TestEventGeneration:
             total_events += len(batch["browser_events"])
 
         events_per_minute = total_events / (ticks_count * config.tick_seconds / 60)
+        expected_events_per_minute = 17 * 60 / config.tick_seconds
 
-        assert events_per_minute < 300
+        assert events_per_minute == pytest.approx(expected_events_per_minute, rel=0.10)
+
+    def test_tick_stream_births_visits_from_average_visit_length_budget(
+        self, event_dictionary, base_config
+    ):
+        """Новый визит рождается после накопления бюджета средней длины визита."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            max_active_sessions=100,
+            population_max=101,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        partial_budget_tick = stream.generate_tick(
+            event_budget=9,
+            tick_started_at=tick_at,
+        )
+        completed_budget_tick = stream.generate_tick(
+            event_budget=1,
+            tick_started_at=tick_at + timedelta(seconds=config.tick_seconds),
+        )
+
+        assert partial_budget_tick["browser_events"] == []
+        assert len(completed_budget_tick["browser_events"]) == 1
 
     def test_tick_stream_keeps_active_visit_between_ticks(self, event_dictionary, base_config):
         """Один визит может выпускать события в нескольких последовательных тиках."""
@@ -177,7 +212,7 @@ class TestEventGeneration:
         stream = TickStreamGenerator(generator)
         first_tick_at = datetime(2026, 6, 11, 12, 0)
 
-        first_tick = stream.generate_tick(event_budget=1, tick_started_at=first_tick_at)
+        first_tick = stream.generate_tick(event_budget=10, tick_started_at=first_tick_at)
         second_tick = stream.generate_tick(
             event_budget=0,
             tick_started_at=first_tick_at + timedelta(seconds=config.tick_seconds),
@@ -202,7 +237,7 @@ class TestEventGeneration:
         stream = TickStreamGenerator(generator)
         tick_at = datetime(2026, 6, 11, 12, 0)
 
-        first_tick = stream.generate_tick(event_budget=1, tick_started_at=tick_at)
+        first_tick = stream.generate_tick(event_budget=10, tick_started_at=tick_at)
         same_time_tick = stream.generate_tick(event_budget=0, tick_started_at=tick_at)
 
         assert len(first_tick["browser_events"]) == 1
@@ -218,7 +253,7 @@ class TestEventGeneration:
         stream = TickStreamGenerator(generator)
         tick_at = datetime(2026, 6, 11, 12, 0)
 
-        first_tick = stream.generate_tick(event_budget=1, tick_started_at=tick_at)
+        first_tick = stream.generate_tick(event_budget=10, tick_started_at=tick_at)
         final_tick = stream.generate_tick(
             event_budget=0,
             tick_started_at=tick_at + timedelta(hours=1),
@@ -247,8 +282,8 @@ class TestEventGeneration:
         stream = TickStreamGenerator(generator)
         tick_at = datetime(2026, 6, 11, 12, 0)
 
-        first_tick = stream.generate_tick(event_budget=5, tick_started_at=tick_at)
-        blocked_tick = stream.generate_tick(event_budget=5, tick_started_at=tick_at)
+        first_tick = stream.generate_tick(event_budget=10, tick_started_at=tick_at)
+        blocked_tick = stream.generate_tick(event_budget=10, tick_started_at=tick_at)
         final_tick = stream.generate_tick(
             event_budget=0,
             tick_started_at=tick_at + timedelta(hours=1),
@@ -304,6 +339,55 @@ class TestEventGeneration:
         assert len(unique_users) < len(users_by_session) < len(events)
         assert repeated_users
         assert all(len(user_ids) == 1 for user_ids in users_by_session.values())
+
+    def test_tick_stream_new_user_share_matches_config_after_warmup(
+        self, event_dictionary, base_config
+    ):
+        """Доля новых пользователей в потоке близка к GEN_P_NEW_USER."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            jitter_pct=0,
+            min_events_per_tick=30,
+            max_events_per_tick=30,
+            lambda_base_per_min=30,
+            max_active_sessions=200,
+            population_max=300,
+            p_new_user=0.15,
+            min_return_minutes=30,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+        warmup_ticks = 240
+        measure_ticks = 480
+        seen_users = set()
+        seen_sessions = set()
+        total_sessions = 0
+        new_user_sessions = 0
+
+        for tick_index in range(warmup_ticks + measure_ticks):
+            batch = stream.generate_tick(
+                event_budget=30,
+                tick_started_at=tick_at + timedelta(seconds=60 * tick_index),
+            )
+            users_by_session = {
+                event["click_id"]: event["user_domain_id"]
+                for event in batch["device_events"]
+            }
+            for click_id, user_id in users_by_session.items():
+                if click_id in seen_sessions:
+                    continue
+                seen_sessions.add(click_id)
+                if tick_index >= warmup_ticks:
+                    total_sessions += 1
+                    if user_id not in seen_users:
+                        new_user_sessions += 1
+                seen_users.add(user_id)
+
+        new_user_share = new_user_sessions / total_sessions
+
+        assert new_user_share == pytest.approx(config.p_new_user, rel=0.35)
 
     def test_tick_stream_replays_same_flow_with_same_seed(
         self, event_dictionary, base_config
@@ -409,6 +493,81 @@ class TestEventGeneration:
                     minutes=config.min_return_minutes
                 )
 
+    def test_returning_user_pause_average_matches_model_scale(
+        self, event_dictionary, base_config
+    ):
+        """Средняя пауза между визитами одного пользователя имеет часовой масштаб."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            jitter_pct=0,
+            min_events_per_tick=30,
+            max_events_per_tick=30,
+            lambda_base_per_min=30,
+            max_active_sessions=200,
+            population_max=300,
+            p_new_user=0.15,
+            min_return_minutes=30,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+
+        batches = _run_stream_batches(
+            stream=stream,
+            tick_at=datetime(2026, 6, 11, 12, 0),
+            ticks_count=16 * 60,
+            event_budget=30,
+            tick_seconds=config.tick_seconds,
+        )
+        users_by_session = {}
+        times_by_session = {}
+        for batch in batches:
+            for device_event in batch["device_events"]:
+                users_by_session.setdefault(
+                    device_event["click_id"],
+                    device_event["user_domain_id"],
+                )
+            for browser_event in batch["browser_events"]:
+                times_by_session.setdefault(browser_event["click_id"], []).append(
+                    datetime.fromisoformat(
+                        browser_event["event_timestamp"].replace(" ", "T")
+                    )
+                )
+
+        sessions_by_user = {}
+        for click_id, timestamps in times_by_session.items():
+            sessions_by_user.setdefault(users_by_session[click_id], []).append(
+                (min(timestamps), max(timestamps))
+            )
+
+        pauses_minutes = []
+        visit_durations_minutes = []
+        for sessions in sessions_by_user.values():
+            ordered_sessions = sorted(sessions)
+            visit_durations_minutes.extend(
+                (finished_at - started_at).total_seconds() / 60
+                for started_at, finished_at in ordered_sessions
+            )
+            for previous, current in zip(ordered_sessions, ordered_sessions[1:]):
+                pauses_minutes.append((current[0] - previous[1]).total_seconds() / 60)
+
+        mean_pause_minutes = sum(pauses_minutes) / len(pauses_minutes)
+        mean_visit_duration_minutes = (
+            sum(visit_durations_minutes) / len(visit_durations_minutes)
+        )
+        expected_pause_minutes = (
+            config.population_max
+            / (
+                config.lambda_base_per_min
+                / EXPECTED_VISIT_EVENTS
+                * (1 - config.p_new_user)
+            )
+            - mean_visit_duration_minutes
+        )
+
+        assert min(pauses_minutes) >= config.min_return_minutes
+        assert mean_pause_minutes == pytest.approx(expected_pause_minutes, rel=0.30)
+
     def test_visit_cooldown_starts_from_planned_last_event_time(
         self, event_dictionary, base_config
     ):
@@ -426,7 +585,7 @@ class TestEventGeneration:
         stream = TickStreamGenerator(generator)
         tick_at = datetime(2026, 6, 11, 12, 0)
 
-        first_tick = stream.generate_tick(event_budget=1, tick_started_at=tick_at)
+        first_tick = stream.generate_tick(event_budget=10, tick_started_at=tick_at)
         user_id = first_tick["device_events"][0]["user_domain_id"]
         planned_visit_end = stream.active_visits[0].timestamps[-1]
 
@@ -459,13 +618,13 @@ class TestEventGeneration:
         stream = TickStreamGenerator(generator)
         tick_at = datetime(2026, 6, 11, 12, 0)
 
-        first_tick = stream.generate_tick(event_budget=5, tick_started_at=tick_at)
+        first_tick = stream.generate_tick(event_budget=10, tick_started_at=tick_at)
         second_tick = stream.generate_tick(
-            event_budget=5,
+            event_budget=10,
             tick_started_at=tick_at + timedelta(hours=1),
         )
         third_tick = stream.generate_tick(
-            event_budget=5,
+            event_budget=10,
             tick_started_at=tick_at + timedelta(hours=2),
         )
 
@@ -622,6 +781,21 @@ class TestEventGeneration:
         assert max(len(visit) for visit in visits) <= 4
         assert any(len(visit) == 4 for visit in visits)
 
+    def test_visit_length_distribution_matches_seed_scale(
+        self, event_dictionary, base_config
+    ):
+        """Длина визита сопоставима с сидом: медиана и среднее около 10."""
+        generator = EventGenerator(event_dictionary, base_config)
+
+        visits = _page_path_visits(generator, 2000)
+        visit_lengths = sorted(len(visit) for visit in visits)
+        median_length = visit_lengths[len(visit_lengths) // 2]
+        mean_length = sum(visit_lengths) / len(visit_lengths)
+
+        assert 8 <= median_length <= 12
+        assert mean_length == pytest.approx(EXPECTED_VISIT_EVENTS, rel=0.10)
+        assert max(visit_lengths) <= base_config.max_session_events
+
     def test_visit_pauses_stay_below_session_timeout_scale(self, event_dictionary, base_config):
         """Паузы внутри визита остаются меньше 30 минут, p95 — единицы минут."""
         generator = EventGenerator(event_dictionary, base_config)
@@ -650,6 +824,23 @@ class TestEventGeneration:
         )
 
         assert 0.20 <= confirmation_share <= 0.30
+
+    def test_visit_funnel_monotonically_fades(self, event_dictionary, base_config):
+        """Воронка по визитам монотонно затухает от главной до подтверждения."""
+        generator = EventGenerator(event_dictionary, base_config)
+
+        visits = _page_path_visits(generator, 2000)
+        home_visits = sum("/home" in visit for visit in visits)
+        product_visits = sum(
+            "/product_a" in visit or "/product_b" in visit
+            for visit in visits
+        )
+        cart_visits = sum("/cart" in visit for visit in visits)
+        payment_visits = sum("/payment" in visit for visit in visits)
+        confirmation_visits = sum("/confirmation" in visit for visit in visits)
+
+        assert home_visits >= product_visits >= cart_visits
+        assert cart_visits >= payment_visits >= confirmation_visits
 
     def test_visit_can_continue_after_confirmation(self, event_dictionary, base_config):
         """/confirmation не обязан быть последним событием визита."""
@@ -697,6 +888,51 @@ class TestEventGeneration:
 class TestPoissonDistribution:
     """Тесты статистической модели."""
 
+    def test_event_budget_mean_follows_lambda_and_hour_factor(
+        self, base_config, monkeypatch
+    ):
+        """Средний событийный бюджет следует λ и часовому коэффициенту."""
+        monkeypatch.setattr(
+            "clickstream_generator.intensity.hour_factor",
+            lambda: 1.2,
+        )
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            lambda_base_per_min=30,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=100,
+        )
+        rng = random.Random(config.seed)
+
+        samples = [calculate_events_count(config, rng) for _ in range(1000)]
+        mean_budget = sum(samples) / len(samples)
+
+        assert mean_budget == pytest.approx(30 * 1.2, rel=0.15)
+
+    def test_default_tick_budget_floor_does_not_outgrow_target_lambda(
+        self, base_config, monkeypatch
+    ):
+        """Дефолтная нижняя граница бюджета не разгоняет lambda=30 на тике 5 секунд."""
+        monkeypatch.setattr(
+            "clickstream_generator.intensity.hour_factor",
+            lambda: 1.0,
+        )
+        config = replace(
+            base_config,
+            tick_seconds=5,
+            lambda_base_per_min=30,
+            jitter_pct=0,
+            max_events_per_tick=50,
+        )
+        rng = random.Random(config.seed)
+
+        samples = [calculate_events_count(config, rng) for _ in range(1000)]
+        events_per_minute = sum(samples) / len(samples) * 60 / config.tick_seconds
+
+        assert events_per_minute == pytest.approx(config.lambda_base_per_min, rel=0.20)
+
     def test_calculate_events_respects_bounds(self, event_dictionary, base_config):
         """Расчет количества событий уважает границы."""
         generator = EventGenerator(event_dictionary, base_config)
@@ -725,14 +961,19 @@ class TestPoissonDistribution:
 
     def test_mean_is_reasonable(self, event_dictionary, base_config):
         """Среднее значение в разумных пределах."""
-        generator = EventGenerator(event_dictionary, base_config)
+        config = replace(
+            base_config,
+            jitter_pct=0,
+            min_events_per_tick=1,
+        )
+        generator = EventGenerator(event_dictionary, config)
 
         samples = [generator._calculate_events_count() for _ in range(500)]
         mean = sum(samples) / len(samples)
 
         # Ожидаем: lambda_base * tick_seconds / 60 * hour_factor
         # hour_factor обычно 0.7-1.2
-        expected_base = base_config.lambda_base_per_min * base_config.tick_seconds / 60.0
+        expected_base = config.lambda_base_per_min * config.tick_seconds / 60.0
 
         # Допустимое отклонение до 50%
         assert mean > expected_base * 0.5, f"Mean {mean} too low (expected ~{expected_base})"

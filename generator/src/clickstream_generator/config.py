@@ -16,13 +16,13 @@ class Config:
         default_factory=lambda: int(os.getenv("GEN_TICK_SECONDS", "5"))
     )
     lambda_base_per_min: int = field(
-        default_factory=lambda: int(os.getenv("GEN_LAMBDA_BASE_PER_MIN", "200"))
+        default_factory=lambda: int(os.getenv("GEN_LAMBDA_BASE_PER_MIN", "30"))
     )
     jitter_pct: int = field(
         default_factory=lambda: int(os.getenv("GEN_JITTER_PCT", "20"))
     )
     min_events_per_tick: int = field(
-        default_factory=lambda: int(os.getenv("GEN_MIN_EVENTS_PER_TICK", "5"))
+        default_factory=lambda: int(os.getenv("GEN_MIN_EVENTS_PER_TICK", "1"))
     )
     max_events_per_tick: int = field(
         default_factory=lambda: int(os.getenv("GEN_MAX_EVENTS_PER_TICK", "50"))
