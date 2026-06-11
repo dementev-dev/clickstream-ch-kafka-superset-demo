@@ -61,6 +61,43 @@ class TestEventGeneration:
         assert len(batch["device_events"]) == 10
         assert len(batch["geo_events"]) == 10
 
+    def test_generate_batch_creates_one_connected_visit(self, event_dictionary, base_config):
+        """Публичный вызов генератора создаёт один связанный визит."""
+        generator = EventGenerator(event_dictionary, base_config)
+        batch = generator.generate_batch(3)
+
+        original_event_ids = {e["event_id"] for e in event_dictionary.browser_events}
+        original_click_ids = {e["click_id"] for e in event_dictionary.browser_events}
+
+        browser_events = batch["browser_events"]
+        location_events = batch["location_events"]
+        device_events = batch["device_events"]
+        geo_events = batch["geo_events"]
+
+        click_ids = {event["click_id"] for event in browser_events}
+        event_ids = [event["event_id"] for event in browser_events]
+
+        assert len(browser_events) > 1
+        assert len(click_ids) == 1
+        click_id = next(iter(click_ids))
+        assert click_id not in original_click_ids
+        uuid.UUID(click_id)
+
+        assert len(set(event_ids)) == len(event_ids)
+        assert all(event_id not in original_event_ids for event_id in event_ids)
+        for event_id in event_ids:
+            uuid.UUID(event_id)
+
+        assert {event["event_id"] for event in location_events} == set(event_ids)
+        assert {event["click_id"] for event in device_events} == {click_id}
+        assert {event["click_id"] for event in geo_events} == {click_id}
+
+        device_context = [{k: v for k, v in event.items() if k != "click_id"} for event in device_events]
+        geo_context = [{k: v for k, v in event.items() if k != "click_id"} for event in geo_events]
+        assert len({event["user_domain_id"] for event in device_events}) == 1
+        assert all(context == device_context[0] for context in device_context)
+        assert all(context == geo_context[0] for context in geo_context)
+
     def test_event_ids_are_new_uuids(self, event_dictionary, base_config):
         """event_id и click_id — новые UUID, не из оригинальных данных."""
         generator = EventGenerator(event_dictionary, base_config)

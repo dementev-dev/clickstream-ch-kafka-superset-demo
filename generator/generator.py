@@ -153,12 +153,15 @@ class EventDictionary:
     geo_events: list[dict[str, Any]]
 
     # Индексы для быстрого поиска
+    browser_by_click_id: dict[str, list[dict]] = field(default_factory=dict)
     location_by_event_id: dict[str, dict] = field(default_factory=dict)
     device_by_click_id: dict[str, dict] = field(default_factory=dict)
     geo_by_click_id: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self):
         # Строим индексы для связности
+        for browser in self.browser_events:
+            self.browser_by_click_id.setdefault(browser["click_id"], []).append(browser)
         for loc in self.location_events:
             self.location_by_event_id[loc["event_id"]] = loc
         for dev in self.device_events:
@@ -281,16 +284,40 @@ class EventGenerator:
             "geo_events": [],
         }
 
-        for _ in range(batch_size):
-            # Выбираем случайное браузерное событие как базу
+        if batch_size <= 0:
+            return batch
+
+        visit_candidates = [
+            click_id for click_id, browser_events in self.dictionary.browser_by_click_id.items()
+            if (
+                len(browser_events) >= batch_size
+                and click_id in self.dictionary.device_by_click_id
+                and click_id in self.dictionary.geo_by_click_id
+                and all(
+                    event["event_id"] in self.dictionary.location_by_event_id
+                    for event in browser_events[:batch_size]
+                )
+            )
+        ]
+        if visit_candidates:
+            base_click_id = self.rng.choice(visit_candidates)
+            base_browser_events = self.dictionary.browser_by_click_id[base_click_id][:batch_size]
+        else:
+            # Крайний случай для очень малого сида: сохраняем форму визита,
+            # даже если приходится брать события с повторением.
             base_browser = self.rng.choice(self.dictionary.browser_events)
+            base_click_id = base_browser["click_id"]
+            base_browser_events = [base_browser for _ in range(batch_size)]
+
+        base_device = self.dictionary.device_by_click_id.get(base_click_id)
+        base_geo = self.dictionary.geo_by_click_id.get(base_click_id)
+        new_click_id = self._new_uuid()
+
+        for base_browser in base_browser_events:
             base_location = self.dictionary.location_by_event_id.get(base_browser["event_id"])
-            base_device = self.dictionary.device_by_click_id.get(base_browser["click_id"])
-            base_geo = self.dictionary.geo_by_click_id.get(base_browser["click_id"])
 
             # Генерируем новые ID
             new_event_id = self._new_uuid()
-            new_click_id = self._new_uuid()
             new_timestamp = self._current_timestamp()
 
             # Создаём новое браузерное событие
