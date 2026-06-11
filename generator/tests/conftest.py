@@ -5,8 +5,11 @@ Pytest fixtures для тестирования генератора.
 import sys
 from pathlib import Path
 
-# Добавляем родительскую директорию в путь
-sys.path.insert(0, str(Path(__file__).parent.parent))
+GENERATOR_DIR = Path(__file__).parent.parent
+
+# Добавляем фасад generator.py и src-пакет в путь
+sys.path.insert(0, str(GENERATOR_DIR))
+sys.path.insert(0, str(GENERATOR_DIR / "src"))
 
 import pytest
 from generator import Config, EventDictionary

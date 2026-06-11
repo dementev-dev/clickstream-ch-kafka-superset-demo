@@ -71,22 +71,29 @@
 
 Целевая форма:
 
-- `generator/config.py` — конфигурация и её валидация;
-- `generator/dictionary.py` — загрузка и индексы исходных JSONL;
-- `generator/generation.py` — чистая генеративная модель визита, страниц и пауз;
-- `generator/intensity.py` — расчёт бюджета активности: Пуассон, часовой
-  коэффициент, jitter;
-- `generator/kafka_io.py` — Kafka publisher, создание топиков, Kafka-state;
-- `generator/state.py` — сериализуемое состояние генератора;
-- `generator/service.py` — основной сервисный цикл и метрики;
-- `generator/generator.py` — тонкая точка входа или совместимый фасад для
-  старых импортов тестов.
+- `generator/generator.py` — тонкая точка входа и совместимый фасад для старых
+  импортов тестов;
+- `generator/src/clickstream_generator/config.py` — конфигурация и её валидация;
+- `generator/src/clickstream_generator/dictionary.py` — загрузка и индексы
+  исходных JSONL;
+- `generator/src/clickstream_generator/generation.py` — чистая генеративная
+  модель визита, страниц и пауз;
+- `generator/src/clickstream_generator/intensity.py` — расчёт бюджета активности:
+  Пуассон, часовой коэффициент, jitter;
+- `generator/src/clickstream_generator/runtime.py` — переходный тиковый слой до
+  активных визитов;
+- `generator/src/clickstream_generator/kafka_io.py` — Kafka publisher, создание
+  топиков, Kafka-state и история batch;
+- `generator/src/clickstream_generator/state.py` — сериализуемое состояние
+  генератора;
+- `generator/src/clickstream_generator/metrics.py` — Prometheus-метрики;
+- `generator/src/clickstream_generator/service.py` — основной сервисный цикл.
 
-Сейчас `generator/` не оформлен как Python-пакет: тесты импортируют
-`generator/generator.py` как модуль `generator`, а Dockerfile копирует только
-`generator.py`. В рамках этой уборки нужно сохранить совместимость импортов и
-обновить контейнерный запуск под новую структуру файлов; превращать каталог в
-пакет через `__init__.py` не требуется.
+`generator.py` остаётся фасадом, потому что тесты и часть документации уже
+используют импорт `from generator import ...`. Рабочий пакет называется
+`clickstream_generator`, чтобы не путать его с каталогом `generator/` и файлом
+`generator.py`. Dockerfile должен копировать `src/` и выставлять
+`PYTHONPATH=/app/src`.
 
 Точное разбиение может быть чуть проще, если это уменьшит шум, но граница между
 моделью генерации, тиковым runtime и Kafka-интеграцией должна быть явной.
@@ -97,6 +104,9 @@
   новый слой состояния, и его нельзя удобно встроить в текущий монолит.
 - **Принято:** внешнее поведение генератора не меняется. Цель задачи — форма
   кода, а не новая модель данных.
+- **Принято:** исходники живут в `generator/src/clickstream_generator/`, а не
+  россыпью в `generator/`. Причина: так структура ближе к обычному Python-пакету
+  и проще для учебного чтения.
 - **Принято:** `generate_tick_batch()` считать временным переходным механизмом.
   После задачи 03 тик должен выпускать созревшие события активных визитов.
 - **Отклонено:** ограничиться перестановкой функций внутри `generator.py`.
@@ -118,13 +128,15 @@
 - Сервисный контур продолжает публиковать в те же четыре Kafka-топика:
   `browser_events`, `location_events`, `device_events`, `geo_events`.
 - Dockerfile и запуск контейнера учитывают новую структуру файлов.
+- Рабочий пакет импортируется как `clickstream_generator`, при этом старые
+  импорты через фасад `generator.py` продолжают работать.
 - В коде есть ясное место, куда задача 03 добавит активные визиты без расширения
   Kafka-слоя и без переписывания генерации одного визита.
 
 ## Documentation impact
 
 - После реализации уборки обновить `generator/README.md`: описать новую
-  структуру файлов и убрать формулировки, которые привязаны к одному
-  `generator.py`.
+  структуру `src/clickstream_generator` и убрать формулировки, которые привязаны
+  к одному `generator.py`.
 - Если по ходу будет принято решение удалить или заменить `generator_batch_history`,
   это должно быть отдельно отражено в README и в задаче реализации.

@@ -16,6 +16,24 @@ generator-service -> Kafka topics -> (потребители отдельно)
 
 Генератор работает автономно и не зависит от потребителей (Airflow, ClickHouse).
 
+### Структура кода
+
+Код разнесён в пакет `src/clickstream_generator/`. Сам `generator.py` остаётся
+точкой входа и совместимым фасадом для старых импортов из тестов.
+
+| Файл | Назначение |
+|------|------------|
+| `src/clickstream_generator/config.py` | переменные окружения и валидация настроек |
+| `src/clickstream_generator/dictionary.py` | загрузка и индексы исходных JSONL |
+| `src/clickstream_generator/generation.py` | генерация одного связанного визита |
+| `src/clickstream_generator/intensity.py` | расчёт событийного бюджета тика |
+| `src/clickstream_generator/runtime.py` | временный тиковый слой до активных визитов |
+| `src/clickstream_generator/kafka_io.py` | Kafka publisher, история batch, Kafka-state и служебные топики |
+| `src/clickstream_generator/state.py` | сериализуемое состояние генератора |
+| `src/clickstream_generator/metrics.py` | Prometheus-метрики |
+| `src/clickstream_generator/service.py` | основной цикл сервиса |
+| `generator.py` | запуск сервиса и совместимый фасад |
+
 ## Режим работы: `steady-stream`
 
 - Публикуем постепенно, **короткими тиками** (по умолчанию каждые 5 секунд)
@@ -246,6 +264,7 @@ generator/tests/
 ├── test_history.py       # Тесты структуры BatchRecord
 ├── test_kafka_history.py # Тесты KafkaBatchHistory
 ├── test_service.py       # Тесты GeneratorService
+├── test_service_cleanup.py # Контракт разбиения сервиса на модули
 └── test_state.py         # Тесты GeneratorState и KafkaStateManager
 ```
 

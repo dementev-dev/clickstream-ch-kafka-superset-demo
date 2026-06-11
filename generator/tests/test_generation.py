@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 
 import pytest
-from generator import EventGenerator, EventDictionary
+from generator import EventGenerator, EventDictionary, generate_tick_batch
 
 
 ALLOWED_PAGE_PATHS = {
@@ -95,7 +95,7 @@ class TestEventGeneration:
         """Тиковый батч набирает целевой бюджет из одного или нескольких визитов."""
         generator = EventGenerator(event_dictionary, base_config)
 
-        batch = generator.generate_tick_batch(20)
+        batch = generate_tick_batch(generator, 20)
 
         assert len(batch["browser_events"]) == 20
         assert len(batch["location_events"]) == 20

@@ -12,8 +12,9 @@ COPY requirements.txt .
 RUN uv venv /app/.venv && \
     uv pip install --python /app/.venv/bin/python -r requirements.txt
 
-# Копируем код
+# Копируем точку входа и пакет генератора
 COPY generator.py .
+COPY src ./src
 
 # Не-root пользователь для безопасности
 RUN useradd -m -u 1000 generator && chown -R generator:generator /app
@@ -21,6 +22,7 @@ USER generator
 
 # Активируем venv через PATH
 ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/src"
 
 # Запуск генератора
 CMD ["python", "generator.py"]

@@ -50,7 +50,8 @@ user_domain_id (постоянный пользователь, cookie)
 
 ## Что генератор делает правильно
 
-Файл `generator/generator.py`, `_calculate_events_count()` (стр. ~232–260):
+Файл `generator/src/clickstream_generator/intensity.py`,
+`calculate_events_count()`:
 
 - **Poisson-процесс** прихода событий: λ на минуту → λ на тик → розыгрыш Пуассона.
 - **Дневной коэффициент** `_hour_factor()`: день (9–18) ×1.2, ночь (0–5) ×0.7.
@@ -60,8 +61,8 @@ user_domain_id (постоянный пользователь, cookie)
 
 ## Исторический корневой дефект: модель сущностей в `generate_batch()`
 
-До среза от 2026-06-11 файл `generator/generator.py`, `generate_batch()` на
-каждое событие в батче делал примерно следующее:
+До среза от 2026-06-11 прежняя реализация `generate_batch()` в монолитном
+`generator/generator.py` на каждое событие в батче делала примерно следующее:
 
 ```python
 base_browser = self.rng.choice(self.dictionary.browser_events)  # случайная сид-строка
@@ -123,8 +124,9 @@ device_event = {**base_device, "click_id": new_click_id}         # user_domain_i
 
 ## Ссылки
 
-- Код: `generator/generator.py` — `_calculate_events_count()` (стр. ~232–260),
-  `generate_batch()` (стр. ~262–330).
+- Код: `generator/src/clickstream_generator/intensity.py` —
+  `calculate_events_count()`; `generator/src/clickstream_generator/generation.py`
+  — `EventGenerator.generate_batch()`.
 - Доменная модель: `sql/ddl/dds/30_dds.sql`, `sql/ddl/dm/40_dm.sql`.
 - Контекст обсуждения: ветка `docs/advanced-clickstream-course`, дизайн
   Superset-дашборда (урок 6 курса).
