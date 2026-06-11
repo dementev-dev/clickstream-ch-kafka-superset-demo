@@ -77,7 +77,7 @@ class EventGenerator:
 
     def _new_uuid(self) -> str:
         """Генерирует новый UUID."""
-        return str(uuid.uuid4())
+        return str(uuid.UUID(int=self.rng.getrandbits(128), version=4))
 
     def _current_timestamp(self) -> str:
         """Возвращает текущую метку времени в формате JSONL."""
@@ -133,6 +133,7 @@ class EventGenerator:
         self,
         batch_size: int,
         planned_start_at: datetime | None = None,
+        user_profile: dict[str, dict] | None = None,
     ) -> dict[str, list[dict]]:
         """Генерирует один визит с сохранением связей."""
         if not self.dictionary.browser_events:
@@ -177,8 +178,16 @@ class EventGenerator:
             base_click_id = base_browser["click_id"]
             base_browser_events = [base_browser for _ in range(len(visit_path))]
 
-        base_device = self.dictionary.device_by_click_id.get(base_click_id)
-        base_geo = self.dictionary.geo_by_click_id.get(base_click_id)
+        base_device = (
+            user_profile["device"]
+            if user_profile is not None
+            else self.dictionary.device_by_click_id.get(base_click_id)
+        )
+        base_geo = (
+            user_profile["geo"]
+            if user_profile is not None
+            else self.dictionary.geo_by_click_id.get(base_click_id)
+        )
         new_click_id = self._new_uuid()
         planned_timestamp = planned_start_at or datetime.now(timezone.utc)
         if planned_timestamp.tzinfo is not None:

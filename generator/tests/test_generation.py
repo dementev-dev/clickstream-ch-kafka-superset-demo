@@ -37,6 +37,41 @@ def _page_path_visits(generator, visits_count: int):
     ]
 
 
+def _run_stream(
+    stream,
+    tick_at: datetime,
+    ticks_count: int,
+    event_budget: int,
+    tick_seconds: int,
+):
+    events = []
+    for tick_index in range(ticks_count):
+        batch = stream.generate_tick(
+            event_budget=event_budget,
+            tick_started_at=tick_at + timedelta(seconds=tick_seconds * tick_index),
+        )
+        events.extend(batch["device_events"])
+    return events
+
+
+def _run_stream_batches(
+    stream,
+    tick_at: datetime,
+    ticks_count: int,
+    event_budget: int,
+    tick_seconds: int,
+):
+    batches = []
+    for tick_index in range(ticks_count):
+        batches.append(
+            stream.generate_tick(
+                event_budget=event_budget,
+                tick_started_at=tick_at + timedelta(seconds=tick_seconds * tick_index),
+            )
+        )
+    return batches
+
+
 class TestEventGeneration:
     """Тесты генерации событий."""
 
@@ -137,7 +172,7 @@ class TestEventGeneration:
 
     def test_tick_stream_keeps_active_visit_between_ticks(self, event_dictionary, base_config):
         """Один визит может выпускать события в нескольких последовательных тиках."""
-        config = replace(base_config, tick_seconds=60, max_session_events=5)
+        config = replace(base_config, tick_seconds=30 * 60, max_session_events=5)
         generator = EventGenerator(event_dictionary, config)
         stream = TickStreamGenerator(generator)
         first_tick_at = datetime(2026, 6, 11, 12, 0)
@@ -229,6 +264,228 @@ class TestEventGeneration:
         assert blocked_tick["browser_events"] == []
         assert {event["click_id"] for event in final_tick["browser_events"]} == {click_id}
         assert later_tick["browser_events"] == []
+
+    def test_tick_stream_reuses_users_across_visits(self, event_dictionary, base_config):
+        """Длинная симуляция даёт пирамиду users < sessions < events."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            max_session_events=3,
+            max_active_sessions=50,
+            population_max=60,
+            p_new_user=0,
+            min_return_minutes=0,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+
+        events = _run_stream(
+            stream=stream,
+            tick_at=datetime(2026, 6, 11, 12, 0),
+            ticks_count=240,
+            event_budget=6,
+            tick_seconds=config.tick_seconds,
+        )
+        users_by_session = {}
+        for event in events:
+            users_by_session.setdefault(event["click_id"], set()).add(event["user_domain_id"])
+
+        unique_users = {event["user_domain_id"] for event in events}
+        repeated_users = [
+            user_id
+            for user_id in unique_users
+            if len({
+                event["click_id"]
+                for event in events
+                if event["user_domain_id"] == user_id
+            }) > 1
+        ]
+
+        assert len(unique_users) < len(users_by_session) < len(events)
+        assert repeated_users
+        assert all(len(user_ids) == 1 for user_ids in users_by_session.values())
+
+    def test_tick_stream_replays_same_flow_with_same_seed(
+        self, event_dictionary, base_config
+    ):
+        """Одинаковый seed даёт одинаковые решения популяции и визитов."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            max_session_events=3,
+            max_active_sessions=5,
+            population_max=6,
+            p_new_user=0,
+            min_return_minutes=0,
+        )
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_stream = TickStreamGenerator(EventGenerator(event_dictionary, config))
+        second_stream = TickStreamGenerator(EventGenerator(event_dictionary, config))
+
+        first_events = []
+        second_events = []
+        for tick_index in range(10):
+            tick_time = tick_at + timedelta(seconds=config.tick_seconds * tick_index)
+            first_batch = first_stream.generate_tick(
+                event_budget=3,
+                tick_started_at=tick_time,
+            )
+            second_batch = second_stream.generate_tick(
+                event_budget=3,
+                tick_started_at=tick_time,
+            )
+            first_events.extend(first_batch["device_events"])
+            second_events.extend(second_batch["device_events"])
+
+        first_decisions = [
+            (event["click_id"], event["user_domain_id"])
+            for event in first_events
+        ]
+        second_decisions = [
+            (event["click_id"], event["user_domain_id"])
+            for event in second_events
+        ]
+
+        assert first_decisions == second_decisions
+
+    def test_returning_user_waits_for_cooldown_after_visit_end(
+        self, event_dictionary, base_config
+    ):
+        """Пользователь не получает новый визит раньше кулдауна возврата."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            max_session_events=3,
+            max_active_sessions=5,
+            population_max=20,
+            p_new_user=0,
+            min_return_minutes=30,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+
+        batches = _run_stream_batches(
+            stream=stream,
+            tick_at=datetime(2026, 6, 11, 12, 0),
+            ticks_count=240,
+            event_budget=1,
+            tick_seconds=config.tick_seconds,
+        )
+        users_by_session = {}
+        times_by_session = {}
+        for batch in batches:
+            for device_event in batch["device_events"]:
+                users_by_session.setdefault(
+                    device_event["click_id"],
+                    device_event["user_domain_id"],
+                )
+            for browser_event in batch["browser_events"]:
+                times_by_session.setdefault(browser_event["click_id"], []).append(
+                    datetime.fromisoformat(
+                        browser_event["event_timestamp"].replace(" ", "T")
+                    )
+                )
+
+        sessions_by_user = {}
+        for click_id, timestamps in times_by_session.items():
+            sessions_by_user.setdefault(users_by_session[click_id], []).append(
+                (min(timestamps), max(timestamps))
+            )
+
+        repeated_users = [
+            sessions
+            for sessions in sessions_by_user.values()
+            if len(sessions) > 1
+        ]
+
+        assert repeated_users
+        for sessions in repeated_users:
+            ordered_sessions = sorted(sessions)
+            for previous, current in zip(ordered_sessions, ordered_sessions[1:]):
+                previous_end = previous[1]
+                current_start = current[0]
+                assert current_start - previous_end >= timedelta(
+                    minutes=config.min_return_minutes
+                )
+
+    def test_visit_cooldown_starts_from_planned_last_event_time(
+        self, event_dictionary, base_config
+    ):
+        """Кулдаун считается от запланированного конца визита, а не от позднего тика."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            max_session_events=3,
+            max_active_sessions=1,
+            population_max=2,
+            p_new_user=0,
+            min_return_minutes=30,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_tick = stream.generate_tick(event_budget=1, tick_started_at=tick_at)
+        user_id = first_tick["device_events"][0]["user_domain_id"]
+        planned_visit_end = stream.active_visits[0].timestamps[-1]
+
+        stream.generate_tick(
+            event_budget=0,
+            tick_started_at=planned_visit_end + timedelta(hours=1),
+        )
+        user = next(
+            user
+            for user in stream.population.users
+            if user.user_domain_id == user_id
+        )
+
+        assert user.last_finished_at == planned_visit_end
+
+    def test_tick_stream_creates_new_user_when_no_returning_user_is_available(
+        self, event_dictionary, base_config
+    ):
+        """Если все прежние пользователи в кулдауне, новый визит получает нового пользователя."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            max_session_events=2,
+            max_active_sessions=1,
+            population_max=2,
+            p_new_user=0,
+            min_return_minutes=240,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_tick = stream.generate_tick(event_budget=5, tick_started_at=tick_at)
+        second_tick = stream.generate_tick(
+            event_budget=5,
+            tick_started_at=tick_at + timedelta(hours=1),
+        )
+        third_tick = stream.generate_tick(
+            event_budget=5,
+            tick_started_at=tick_at + timedelta(hours=2),
+        )
+
+        first_two_users = {
+            event["user_domain_id"]
+            for event in first_tick["device_events"] + second_tick["device_events"]
+        }
+        later_users = {
+            event["user_domain_id"]
+            for event in third_tick["device_events"]
+        }
+        first_user = first_tick["device_events"][0]["user_domain_id"]
+        second_new_users = first_two_users - {first_user}
+        new_users = later_users - first_two_users
+
+        assert new_users
+        assert stream.population_size <= config.population_max
+        assert first_user not in stream.population_user_ids
+        assert second_new_users <= stream.population_user_ids
+        assert new_users <= stream.population_user_ids
 
     def test_generate_batch_creates_one_connected_visit(self, event_dictionary, base_config):
         """Публичный вызов генератора создаёт один связанный визит."""

@@ -35,6 +35,18 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="GEN_MAX_ACTIVE_SESSIONS"):
             replace(base_config, max_active_sessions=10, population_max=10)
 
+    def test_new_user_probability_must_be_valid_share(self, base_config):
+        """Вероятность нового пользователя должна быть долей от 0 до 1."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="GEN_P_NEW_USER"):
+            replace(base_config, p_new_user=1.5)
+
+    def test_min_return_minutes_must_not_be_negative(self, base_config):
+        """Кулдаун возврата не может быть отрицательным."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="GEN_MIN_RETURN_MINUTES"):
+            replace(base_config, min_return_minutes=-1)
+
     def test_data_dir_must_exist(self, base_config):
         """data_dir должен существовать."""
         from dataclasses import replace

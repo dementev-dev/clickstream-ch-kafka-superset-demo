@@ -36,6 +36,12 @@ class Config:
     population_max: int = field(
         default_factory=lambda: int(os.getenv("GEN_POPULATION_MAX", "300"))
     )
+    p_new_user: float = field(
+        default_factory=lambda: float(os.getenv("GEN_P_NEW_USER", "0.15"))
+    )
+    min_return_minutes: int = field(
+        default_factory=lambda: int(os.getenv("GEN_MIN_RETURN_MINUTES", "30"))
+    )
     data_dir: Path = field(
         default_factory=lambda: Path(os.getenv("GEN_DATA_DIR", "/data"))
     )
@@ -68,6 +74,10 @@ class Config:
             raise ValueError("GEN_MAX_ACTIVE_SESSIONS must be >= 1")
         if self.population_max < 1:
             raise ValueError("GEN_POPULATION_MAX must be >= 1")
+        if not 0 <= self.p_new_user <= 1:
+            raise ValueError("GEN_P_NEW_USER must be between 0 and 1")
+        if self.min_return_minutes < 0:
+            raise ValueError("GEN_MIN_RETURN_MINUTES must be >= 0")
         if self.max_active_sessions >= self.population_max:
             raise ValueError("GEN_MAX_ACTIVE_SESSIONS must be < GEN_POPULATION_MAX")
         if not self.data_dir.exists():
