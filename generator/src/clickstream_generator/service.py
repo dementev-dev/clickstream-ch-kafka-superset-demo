@@ -23,8 +23,7 @@ from clickstream_generator.metrics import (
     METRICS_LAST_SUCCESS,
     METRICS_TICK_DURATION,
 )
-from clickstream_generator.runtime import generate_tick_batch
-from clickstream_generator.state import GeneratorState
+from clickstream_generator.runtime import TickStreamGenerator
 
 
 logger = logging.getLogger("generator")
@@ -37,6 +36,7 @@ class GeneratorService:
         self.config = config
         self.dictionary = EventDictionary.load(config.data_dir)
         self.generator = EventGenerator(self.dictionary, config)
+        self.stream = TickStreamGenerator(self.generator)
         self.publisher: KafkaPublisher | None = None
         self.history: KafkaBatchHistory | None = None
         self.state_manager: KafkaStateManager | None = None
@@ -71,12 +71,24 @@ class GeneratorService:
             if not self.config.state_reset:
                 restored_state = self.state_manager.load()
                 if restored_state:
-                    self._tick = restored_state.tick
-                    self.generator.rng.setstate(restored_state.rng_state)
-                    logger.info(
-                        f"Restored state: continuing from tick {self._tick}, "
-                        f"last_batch_id={restored_state.last_batch_id}"
-                    )
+                    try:
+                        self.generator.rng.setstate(restored_state.rng_state)
+                        self.stream.restore_state(
+                            restored_state,
+                            restarted_at=datetime.now(timezone.utc),
+                        )
+                        self._tick = restored_state.tick
+                        logger.info(
+                            f"Restored state: continuing from tick {self._tick}, "
+                            f"last_batch_id={restored_state.last_batch_id}"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"State data was invalid, starting fresh: {e}"
+                        )
+                        self.generator = EventGenerator(self.dictionary, self.config)
+                        self.stream = TickStreamGenerator(self.generator)
+                        self._tick = 0
             else:
                 logger.info("State reset requested, starting fresh")
         else:
@@ -108,7 +120,7 @@ class GeneratorService:
             return
 
         try:
-            state = GeneratorState(
+            state = self.stream.to_state(
                 tick=self._tick,
                 rng_state=self.generator.rng.getstate(),
                 last_batch_id=batch_id,
@@ -136,7 +148,7 @@ class GeneratorService:
                     logger.info(f"Generating with event budget ~{events_count}")
 
                     gen_start = time.time()
-                    batch = generate_tick_batch(self.generator, events_count)
+                    batch = self.stream.generate_tick(events_count)
                     gen_duration = time.time() - gen_start
 
                     pub_start = time.time()

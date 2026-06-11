@@ -1,13 +1,16 @@
 """Тиковый слой генератора с активными визитами между вызовами."""
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from weakref import WeakKeyDictionary
 
 from clickstream_generator.generation import EXPECTED_VISIT_EVENTS, EventGenerator
+from clickstream_generator.state import GeneratorState
 
 
 TOPICS = ("browser_events", "location_events", "device_events", "geo_events")
+RESTART_VISIT_GRACE = timedelta(minutes=30)
 
 
 @dataclass
@@ -122,6 +125,22 @@ def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace(" ", "T"))
 
 
+def _datetime_to_state(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _timestamp_to_state_offset(started_at: datetime, timestamp: datetime) -> int:
+    return int((timestamp - started_at).total_seconds() * 1_000_000)
+
+
+def _format_event_timestamp(timestamp: datetime) -> str:
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _stable_event_id(click_id: str, event_index: int) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{click_id}:{event_index}"))
+
+
 def _normalize_tick_time(tick_started_at: datetime | None) -> datetime:
     tick_time = tick_started_at or datetime.now(timezone.utc)
     if tick_time.tzinfo is not None:
@@ -145,6 +164,205 @@ class TickStreamGenerator:
     @property
     def population_user_ids(self) -> set[str]:
         return {user.user_domain_id for user in self.population.users}
+
+    @property
+    def active_visit_count(self) -> int:
+        return len(self.active_visits)
+
+    def to_state(
+        self,
+        tick: int,
+        rng_state: tuple,
+        last_batch_id: str,
+        last_timestamp: datetime,
+    ) -> GeneratorState:
+        """Возвращает JSON-сериализуемый снимок тикового слоя."""
+        return GeneratorState(
+            tick=tick,
+            rng_state=rng_state,
+            last_batch_id=last_batch_id,
+            last_timestamp=last_timestamp,
+            population=[
+                {
+                    "user_domain_id": user.user_domain_id,
+                    "seed_click_id": user.seed_click_id,
+                    "active_click_id": user.active_click_id,
+                    "last_finished_at": _datetime_to_state(user.last_finished_at),
+                }
+                for user in self.population.users
+            ],
+            active_visits=[
+                self._visit_to_state(visit)
+                for visit in self.active_visits
+            ],
+            pending_visit_births=self._pending_visit_births,
+        )
+
+    def _visit_to_state(self, visit: ActiveVisit) -> dict:
+        started_at = visit.timestamps[0]
+        browser_events = visit.batch["browser_events"]
+        location_events = visit.batch["location_events"]
+        return {
+            "user_domain_id": visit.user.user_domain_id if visit.user else None,
+            "click_id": browser_events[0]["click_id"],
+            "next_index": visit.next_index,
+            "started_at": started_at.isoformat(),
+            "offsets_us": [
+                _timestamp_to_state_offset(started_at, timestamp)
+                for timestamp in visit.timestamps
+            ],
+            "page_url_paths": [
+                event["page_url_path"]
+                for event in location_events
+            ],
+        }
+
+    def restore_state(
+        self,
+        state: GeneratorState,
+        restarted_at: datetime | None = None,
+    ) -> None:
+        """Восстанавливает популяцию и активные визиты из state v2."""
+        users = [
+            self._user_from_state(item)
+            for item in state.population
+        ]
+        users_by_id = {user.user_domain_id: user for user in users}
+
+        self.population.users = users
+        self.active_visits = []
+        restarted_time = (
+            _normalize_tick_time(restarted_at)
+            if restarted_at is not None
+            else None
+        )
+        for item in state.active_visits:
+            visit = self._visit_from_state(item, users_by_id)
+            if self._is_overdue_after_restart(visit, restarted_time):
+                self.population.finish_visit(
+                    visit.user,
+                    self._last_released_at(visit, state.last_timestamp),
+                )
+                continue
+            self.active_visits.append(visit)
+        self._pending_visit_births = state.pending_visit_births
+
+    def _user_from_state(self, item: dict) -> UserProfile:
+        seed_click_id = item["seed_click_id"]
+        if seed_click_id not in self.generator.dictionary.device_by_click_id:
+            raise ValueError(f"Unknown user seed_click_id: {seed_click_id}")
+        if seed_click_id not in self.generator.dictionary.geo_by_click_id:
+            raise ValueError(f"Unknown user geo seed_click_id: {seed_click_id}")
+
+        user_domain_id = item["user_domain_id"]
+        device = {
+            **self.generator.dictionary.device_by_click_id[seed_click_id],
+            "user_domain_id": user_domain_id,
+        }
+        geo = self.generator.dictionary.geo_by_click_id[seed_click_id]
+        return UserProfile(
+            user_domain_id=user_domain_id,
+            seed_click_id=seed_click_id,
+            device=device,
+            geo=geo,
+            active_click_id=item.get("active_click_id"),
+            last_finished_at=(
+                _parse_timestamp(item["last_finished_at"])
+                if item.get("last_finished_at")
+                else None
+            ),
+        )
+
+    def _visit_from_state(
+        self,
+        item: dict,
+        users_by_id: dict[str, UserProfile],
+    ) -> ActiveVisit:
+        user = users_by_id.get(item["user_domain_id"])
+        if user is None:
+            raise ValueError(f"Unknown active visit user: {item['user_domain_id']}")
+
+        started_at = _parse_timestamp(item["started_at"])
+        timestamps = [
+            started_at + timedelta(microseconds=offset_us)
+            for offset_us in item["offsets_us"]
+        ]
+        batch = self._compact_visit_batch(
+            click_id=item["click_id"],
+            user=user,
+            timestamps=timestamps,
+            page_url_paths=item["page_url_paths"],
+        )
+        return ActiveVisit(
+            batch=batch,
+            timestamps=timestamps,
+            user=user,
+            next_index=item["next_index"],
+        )
+
+    def _compact_visit_batch(
+        self,
+        click_id: str,
+        user: UserProfile,
+        timestamps: list[datetime],
+        page_url_paths: list[str],
+    ) -> dict[str, list[dict]]:
+        batch = _empty_batch()
+        browser_templates = self.generator.dictionary.browser_by_click_id.get(
+            user.seed_click_id,
+            self.generator.dictionary.browser_events,
+        )
+
+        for event_index, (timestamp, page_url_path) in enumerate(
+            zip(timestamps, page_url_paths)
+        ):
+            browser_template = browser_templates[event_index % len(browser_templates)]
+            location_template = self.generator.dictionary.location_by_event_id.get(
+                browser_template["event_id"],
+                self.generator.dictionary.location_events[0],
+            )
+            event_id = _stable_event_id(click_id, event_index)
+            batch["browser_events"].append(
+                {
+                    **browser_template,
+                    "event_id": event_id,
+                    "click_id": click_id,
+                    "event_timestamp": _format_event_timestamp(timestamp),
+                }
+            )
+            batch["location_events"].append(
+                {
+                    **location_template,
+                    "event_id": event_id,
+                    "page_url": f"http://www.dummywebsite.com{page_url_path}",
+                    "page_url_path": page_url_path,
+                }
+            )
+            batch["device_events"].append({**user.device, "click_id": click_id})
+            batch["geo_events"].append({**user.geo, "click_id": click_id})
+
+        return batch
+
+    def _last_released_at(
+        self,
+        visit: ActiveVisit,
+        fallback: datetime,
+    ) -> datetime:
+        if visit.next_index > 0:
+            return visit.timestamps[visit.next_index - 1]
+        if fallback.tzinfo is not None:
+            return fallback.astimezone(timezone.utc).replace(tzinfo=None)
+        return fallback
+
+    def _is_overdue_after_restart(
+        self,
+        visit: ActiveVisit,
+        restarted_time: datetime | None,
+    ) -> bool:
+        if restarted_time is None or visit.is_finished:
+            return False
+        next_timestamp = visit.timestamps[visit.next_index]
+        return restarted_time - next_timestamp > RESTART_VISIT_GRACE
 
     def generate_tick(
         self,

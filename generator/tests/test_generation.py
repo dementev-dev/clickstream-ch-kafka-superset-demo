@@ -2,6 +2,7 @@
 Тесты генерации событий.
 """
 
+import json
 import random
 import uuid
 from dataclasses import replace
@@ -267,6 +268,147 @@ class TestEventGeneration:
 
         assert {event["click_id"] for event in final_tick["browser_events"]} == {click_id}
         assert later_tick["browser_events"] == []
+
+    def test_tick_stream_state_roundtrip_keeps_population_and_active_visits(
+        self, event_dictionary, base_config
+    ):
+        """Снимок тикового слоя восстанавливает популяцию и активные визиты."""
+        generator = EventGenerator(event_dictionary, base_config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        stream.generate_tick(event_budget=10, tick_started_at=tick_at)
+        state = stream.to_state(
+            tick=1,
+            rng_state=generator.rng.getstate(),
+            last_batch_id="batch-1",
+            last_timestamp=tick_at,
+        )
+        restored_state = type(state).from_dict(json.loads(json.dumps(state.to_dict())))
+
+        restored_generator = EventGenerator(event_dictionary, base_config)
+        restored_stream = TickStreamGenerator(restored_generator)
+        restored_stream.restore_state(restored_state, restarted_at=tick_at)
+
+        assert restored_stream.population_user_ids == stream.population_user_ids
+        assert restored_stream.active_visit_count == stream.active_visit_count
+
+    def test_tick_stream_state_stays_compact_at_active_session_limit(
+        self, event_dictionary, base_config
+    ):
+        """State v2 не хранит полные события активных визитов."""
+        config = replace(
+            base_config,
+            max_session_events=30,
+            max_active_sessions=200,
+            population_max=300,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        stream.generate_tick(
+            event_budget=int(EXPECTED_VISIT_EVENTS * config.max_active_sessions),
+            tick_started_at=tick_at,
+        )
+        state = stream.to_state(
+            tick=1,
+            rng_state=generator.rng.getstate(),
+            last_batch_id="batch-1",
+            last_timestamp=tick_at,
+        )
+        state_bytes = len(json.dumps(state.to_dict()))
+
+        assert stream.active_visit_count == config.max_active_sessions
+        assert state_bytes < 250_000
+
+    def test_tick_stream_restored_after_short_idle_releases_due_original_timestamps(
+        self, event_dictionary, base_config
+    ):
+        """После короткого простоя активный визит продолжается со старыми метками."""
+        config = replace(base_config, max_session_events=5)
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        stream.generate_tick(event_budget=10, tick_started_at=tick_at)
+        state = stream.to_state(
+            tick=1,
+            rng_state=generator.rng.getstate(),
+            last_batch_id="batch-1",
+            last_timestamp=tick_at,
+        )
+        visit_state = state.active_visits[0]
+        started_at = datetime.fromisoformat(visit_state["started_at"])
+        planned_timestamps = {
+            (started_at + timedelta(microseconds=offset_us)).strftime(
+                "%Y-%m-%d %H:%M:%S.%f"
+            )
+            for offset_us in visit_state["offsets_us"]
+        }
+
+        restored_generator = EventGenerator(event_dictionary, config)
+        restored_stream = TickStreamGenerator(restored_generator)
+        restored_stream.restore_state(
+            type(state).from_dict(json.loads(json.dumps(state.to_dict()))),
+            restarted_at=tick_at + timedelta(minutes=29),
+        )
+
+        resumed = restored_stream.generate_tick(
+            event_budget=0,
+            tick_started_at=tick_at + timedelta(minutes=29),
+        )
+        resumed_timestamps = [
+            event["event_timestamp"]
+            for event in resumed["browser_events"]
+        ]
+
+        assert resumed_timestamps
+        assert set(resumed_timestamps).issubset(planned_timestamps)
+        assert all(
+            datetime.fromisoformat(timestamp.replace(" ", "T")) <= tick_at + timedelta(minutes=29)
+            for timestamp in resumed_timestamps
+        )
+
+    def test_tick_stream_restored_after_long_idle_closes_overdue_visit_without_replay(
+        self, event_dictionary, base_config
+    ):
+        """После долгого простоя просроченный визит закрывается без досылки."""
+        config = replace(base_config, max_session_events=5)
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        stream.generate_tick(event_budget=10, tick_started_at=tick_at)
+        population_ids = stream.population_user_ids
+        state = stream.to_state(
+            tick=1,
+            rng_state=generator.rng.getstate(),
+            last_batch_id="batch-1",
+            last_timestamp=tick_at,
+        )
+
+        restored_generator = EventGenerator(event_dictionary, config)
+        restored_stream = TickStreamGenerator(restored_generator)
+        restored_stream.restore_state(
+            type(state).from_dict(json.loads(json.dumps(state.to_dict()))),
+            restarted_at=tick_at + timedelta(hours=1),
+        )
+
+        resumed = restored_stream.generate_tick(
+            event_budget=0,
+            tick_started_at=tick_at + timedelta(hours=1),
+        )
+        restored_user = next(
+            user for user in restored_stream.population.users
+            if user.user_domain_id == state.active_visits[0]["user_domain_id"]
+        )
+        last_sent_at = datetime.fromisoformat(state.active_visits[0]["started_at"])
+
+        assert resumed["browser_events"] == []
+        assert restored_stream.active_visit_count == 0
+        assert restored_stream.population_user_ids == population_ids
+        assert restored_user.last_finished_at == last_sent_at
 
     def test_tick_stream_drops_births_when_active_limit_is_reached(
         self, event_dictionary, base_config

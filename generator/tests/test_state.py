@@ -2,6 +2,7 @@
 Тесты сохранения и восстановления состояния генератора.
 """
 import json
+import logging
 import random
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,47 @@ def _make_valid_rng_state(seed: int = 42):
     return rng.getstate()
 
 
+def _make_valid_v2_state_data() -> dict:
+    """Создаёт минимальный валидный state v2 для тестов загрузки."""
+    return {
+        "tick": 42,
+        "rng_state": list(_make_valid_rng_state(42)),
+        "last_batch_id": "v2",
+        "last_timestamp": "2026-06-11T12:00:00+00:00",
+        "version": "2.0",
+        "population": [
+            {
+                "user_domain_id": "user-1",
+                "seed_click_id": "seed-1",
+                "active_click_id": "visit-1",
+                "last_finished_at": None,
+            }
+        ],
+        "active_visits": [
+            {
+                "user_domain_id": "user-1",
+                "click_id": "visit-1",
+                "next_index": 1,
+                "started_at": "2026-06-11T12:00:00",
+                "offsets_us": [0, 60_000_000],
+                "page_url_paths": ["/home", "/cart"],
+            }
+        ],
+        "pending_visit_births": 0.5,
+    }
+
+
+def _minimal_population() -> list[dict]:
+    return [
+        {
+            "user_domain_id": "user-1",
+            "seed_click_id": "seed-1",
+            "active_click_id": None,
+            "last_finished_at": None,
+        }
+    ]
+
+
 class TestGeneratorState:
     """Тесты структуры состояния генератора."""
 
@@ -30,17 +72,17 @@ class TestGeneratorState:
             rng_state=rng_state,
             last_batch_id="abc123",
             last_timestamp=now,
-            version="1.0",
+            version="2.0",
         )
 
         assert state.tick == 42
         assert state.rng_state == rng_state
         assert state.last_batch_id == "abc123"
         assert state.last_timestamp == now
-        assert state.version == "1.0"
+        assert state.version == "2.0"
 
     def test_default_version(self):
-        """Версия по умолчанию."""
+        """Новые состояния по умолчанию пишутся в версии 2."""
         now = datetime.now(timezone.utc)
         rng_state = _make_valid_rng_state(42)
 
@@ -51,7 +93,7 @@ class TestGeneratorState:
             last_timestamp=now,
         )
 
-        assert state.version == "1.0"
+        assert state.version == "2.0"
 
     def test_to_dict_serialization(self):
         """Сериализация в словарь (JSON-safe, без pickle)."""
@@ -63,6 +105,7 @@ class TestGeneratorState:
             rng_state=rng_state,
             last_batch_id="abc123",
             last_timestamp=now,
+            population=_minimal_population(),
         )
 
         data = state.to_dict()
@@ -70,7 +113,7 @@ class TestGeneratorState:
         assert data["tick"] == 42
         assert data["last_batch_id"] == "abc123"
         assert data["last_timestamp"] == now.isoformat()
-        assert data["version"] == "1.0"
+        assert data["version"] == "2.0"
 
         # Проверяем что rng_state сериализован как tuple (JSON-safe, без pickle)
         assert "rng_state" in data
@@ -93,6 +136,7 @@ class TestGeneratorState:
             rng_state=rng_state,
             last_batch_id="abc123",
             last_timestamp=now,
+            population=_minimal_population(),
         )
 
         # Сериализуем и десериализуем
@@ -117,6 +161,7 @@ class TestGeneratorState:
             rng_state=rng.getstate(),
             last_batch_id="test",
             last_timestamp=datetime.now(timezone.utc),
+            population=_minimal_population(),
         )
 
         # Десериализуем
@@ -137,19 +182,58 @@ class TestGeneratorState:
 
         assert next_values == values_after
 
+    def test_version_2_roundtrip_keeps_population_and_active_visits(self):
+        """State v2 хранит популяцию и активные визиты в JSON."""
+        rng_state = _make_valid_rng_state(42)
+        state = GeneratorState(
+            tick=7,
+            rng_state=rng_state,
+            last_batch_id="batch-7",
+            last_timestamp=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+            version="2.0",
+            population=[
+                {
+                    "user_domain_id": "user-1",
+                    "seed_click_id": "seed-1",
+                    "active_click_id": "visit-1",
+                    "last_finished_at": "2026-06-11T11:30:00",
+                }
+            ],
+            active_visits=[
+                {
+                    "user_domain_id": "user-1",
+                    "click_id": "visit-1",
+                    "next_index": 1,
+                    "started_at": "2026-06-11T12:00:00",
+                    "offsets_us": [0, 60_000_000],
+                    "page_url_paths": ["/home", "/cart"],
+                }
+            ],
+            pending_visit_births=0.5,
+        )
+
+        restored = GeneratorState.from_dict(json.loads(json.dumps(state.to_dict())))
+
+        assert restored.version == "2.0"
+        assert restored.tick == state.tick
+        assert restored.rng_state == rng_state
+        assert restored.population == state.population
+        assert restored.active_visits == state.active_visits
+        assert restored.pending_visit_births == 0.5
+
 
 class TestGeneratorStateValidation:
     """Тесты валидации состояния и graceful degradation."""
 
-    def test_from_dict_missing_rng_state_raises(self):
-        """from_dict выбрасывает исключение при отсутствии rng_state."""
+    def test_from_dict_missing_version_raises(self):
+        """from_dict выбрасывает исключение при отсутствии версии v2."""
         data = {
             "tick": 42,
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
         }
 
-        with pytest.raises(ValueError, match="rng_state"):
+        with pytest.raises(ValueError, match="version"):
             GeneratorState.from_dict(data)
 
     def test_from_dict_invalid_rng_state_raises(self):
@@ -159,6 +243,9 @@ class TestGeneratorStateValidation:
             "rng_state": "not_a_tuple",
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "version": "2.0",
+            "population": _minimal_population(),
+            "active_visits": [],
         }
 
         with pytest.raises(ValueError):
@@ -171,6 +258,9 @@ class TestGeneratorStateValidation:
             "rng_state": [1],  # Слишком короткий
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "version": "2.0",
+            "population": _minimal_population(),
+            "active_visits": [],
         }
 
         with pytest.raises(ValueError):
@@ -183,6 +273,9 @@ class TestGeneratorStateValidation:
             "rng_state": [999, [1, 2, 3], None],  # Невалидный state
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "version": "2.0",
+            "population": [],
+            "active_visits": [],
         }
 
         with pytest.raises(ValueError):
@@ -195,6 +288,9 @@ class TestGeneratorStateValidation:
             "rng_state": "invalid",
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "version": "2.0",
+            "population": [],
+            "active_visits": [],
         }
 
         result = GeneratorState.from_dict_safe(data)
@@ -208,23 +304,24 @@ class TestGeneratorStateValidation:
             "rng_state": list(rng.getstate()),  # JSON сериализует tuple как list
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "version": "2.0",
+            "population": _minimal_population(),
+            "active_visits": [],
         }
 
         result = GeneratorState.from_dict_safe(data)
         assert result is not None
         assert result.tick == 42
 
-    def test_from_dict_uses_defaults_for_missing_fields(self):
-        """from_dict использует defaults для отсутствующих полей."""
+    def test_from_dict_rejects_old_state_without_version(self):
+        """from_dict не восстанавливает старое state v1 без версии."""
         rng = random.Random(42)
         data = {
             "rng_state": list(rng.getstate()),
         }
 
-        result = GeneratorState.from_dict(data)
-        assert result.tick == 0
-        assert result.last_batch_id == ""
-        assert result.version == "1.0"
+        with pytest.raises(ValueError, match="version"):
+            GeneratorState.from_dict(data)
 
 
 class TestKafkaStateManager:
@@ -302,6 +399,8 @@ class TestKafkaStateManager:
                 rng_state=_make_valid_rng_state(100),
                 last_batch_id="xyz789",
                 last_timestamp=now,
+                version="2.0",
+                population=_minimal_population(),
             )
 
             # Мокаем consumer с сообщением
@@ -342,6 +441,208 @@ class TestKafkaStateManager:
 
             # Должно вернуть None из-за невалидного state
             assert result is None
+
+    def test_load_invalid_v2_nested_state_returns_none(self, caplog):
+        """Битое state v2 с валидным rng_state даёт чистый старт."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = {
+                "tick": 42,
+                "rng_state": list(_make_valid_rng_state(42)),
+                "last_batch_id": "bad-v2",
+                "last_timestamp": "2026-06-11T12:00:00+00:00",
+                "version": "2.0",
+                "population": [{"user_domain_id": "user-1"}],
+                "active_visits": [
+                    {
+                        "user_domain_id": "user-1",
+                        "click_id": "visit-1",
+                        "next_index": 1,
+                        "started_at": "2026-06-11T12:00:00",
+                        "offsets_us": [0],
+                    }
+                ],
+            }
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "Invalid state" in caplog.text
+
+    def test_load_empty_population_v2_returns_none(self, caplog):
+        """Пустая популяция в state v2 не восстанавливается."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            bad_state = _make_valid_v2_state_data()
+            bad_state["population"] = []
+            bad_state["active_visits"] = []
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = bad_state
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "Invalid state" in caplog.text
+
+    def test_load_bad_pending_births_v2_returns_none(self, caplog):
+        """Нечисловой pending_visit_births в state v2 не восстанавливается."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            bad_state = _make_valid_v2_state_data()
+            bad_state["pending_visit_births"] = "bad"
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = bad_state
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "Invalid state" in caplog.text
+
+    def test_load_active_visit_with_unknown_user_v2_returns_none(self, caplog):
+        """Активный визит должен ссылаться на пользователя из популяции."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            bad_state = _make_valid_v2_state_data()
+            bad_state["active_visits"][0]["user_domain_id"] = "missing-user"
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = bad_state
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "Invalid state" in caplog.text
+
+    def test_load_active_visit_with_conflicting_click_id_v2_returns_none(self, caplog):
+        """active_click_id пользователя не должен противоречить визиту."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            bad_state = _make_valid_v2_state_data()
+            bad_state["population"][0]["active_click_id"] = "other-visit"
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = bad_state
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "Invalid state" in caplog.text
+
+    def test_load_population_ghost_active_click_id_v2_returns_none(self, caplog):
+        """active_click_id пользователя должен иметь соответствующий активный визит."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            bad_state = _make_valid_v2_state_data()
+            bad_state["population"][0]["active_click_id"] = "ghost"
+            bad_state["active_visits"] = []
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = bad_state
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "Invalid state" in caplog.text
+
+    def test_load_version_1_state_returns_none_with_warning(self, caplog):
+        """Старое state v1 не восстанавливается и даёт чистый старт."""
+        with patch("generator._import_kafka") as mock_import, \
+             patch("kafka.KafkaConsumer") as mock_consumer_class:
+
+            mock_producer_class = MagicMock()
+            mock_import.return_value = (mock_producer_class, None)
+
+            old_state = GeneratorState(
+                tick=100,
+                rng_state=_make_valid_rng_state(100),
+                last_batch_id="old",
+                last_timestamp=datetime.now(timezone.utc),
+                version="1.0",
+            )
+
+            mock_message = MagicMock()
+            mock_message.key = b"default"
+            mock_message.value = old_state.to_dict()
+
+            mock_consumer = MagicMock()
+            mock_consumer.__iter__ = MagicMock(return_value=iter([mock_message]))
+            mock_consumer_class.return_value = mock_consumer
+
+            manager = KafkaStateManager("kafka:29092")
+            with caplog.at_level(logging.WARNING, logger="generator"):
+                result = manager.load()
+
+            assert result is None
+            assert "version" in caplog.text
 
     def test_load_ignores_wrong_key(self):
         """Загрузка игнорирует сообщения с другим ключом."""
@@ -435,6 +736,7 @@ class TestJsonSafeState:
             rng_state=rng.getstate(),
             last_batch_id="test123",
             last_timestamp=datetime.now(timezone.utc),
+            population=_minimal_population(),
         )
         
         # Сериализуем через JSON (как в Kafka)
