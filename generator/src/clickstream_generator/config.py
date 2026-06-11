@@ -30,6 +30,12 @@ class Config:
     max_session_events: int = field(
         default_factory=lambda: int(os.getenv("GEN_MAX_SESSION_EVENTS", "30"))
     )
+    max_active_sessions: int = field(
+        default_factory=lambda: int(os.getenv("GEN_MAX_ACTIVE_SESSIONS", "200"))
+    )
+    population_max: int = field(
+        default_factory=lambda: int(os.getenv("GEN_POPULATION_MAX", "300"))
+    )
     data_dir: Path = field(
         default_factory=lambda: Path(os.getenv("GEN_DATA_DIR", "/data"))
     )
@@ -58,5 +64,11 @@ class Config:
             raise ValueError("GEN_LAMBDA_BASE_PER_MIN must be >= 1")
         if self.max_session_events < 1:
             raise ValueError("GEN_MAX_SESSION_EVENTS must be >= 1")
+        if self.max_active_sessions < 1:
+            raise ValueError("GEN_MAX_ACTIVE_SESSIONS must be >= 1")
+        if self.population_max < 1:
+            raise ValueError("GEN_POPULATION_MAX must be >= 1")
+        if self.max_active_sessions >= self.population_max:
+            raise ValueError("GEN_MAX_ACTIVE_SESSIONS must be < GEN_POPULATION_MAX")
         if not self.data_dir.exists():
             raise ValueError(f"Data directory does not exist: {self.data_dir}")

@@ -129,7 +129,11 @@ class EventGenerator:
         """Совместимый wrapper над расчётом событийного бюджета."""
         return calculate_events_count(self.config, self.rng)
 
-    def generate_batch(self, batch_size: int) -> dict[str, list[dict]]:
+    def generate_batch(
+        self,
+        batch_size: int,
+        planned_start_at: datetime | None = None,
+    ) -> dict[str, list[dict]]:
         """Генерирует один визит с сохранением связей."""
         if not self.dictionary.browser_events:
             return {
@@ -176,7 +180,9 @@ class EventGenerator:
         base_device = self.dictionary.device_by_click_id.get(base_click_id)
         base_geo = self.dictionary.geo_by_click_id.get(base_click_id)
         new_click_id = self._new_uuid()
-        planned_timestamp = datetime.now(timezone.utc)
+        planned_timestamp = planned_start_at or datetime.now(timezone.utc)
+        if planned_timestamp.tzinfo is not None:
+            planned_timestamp = planned_timestamp.astimezone(timezone.utc).replace(tzinfo=None)
 
         for base_browser, page_url_path in zip(base_browser_events, visit_path):
             base_location = self.dictionary.location_by_event_id.get(base_browser["event_id"])

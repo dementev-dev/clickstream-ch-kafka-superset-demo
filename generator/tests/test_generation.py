@@ -4,10 +4,10 @@
 
 import uuid
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
-from generator import EventGenerator, EventDictionary, generate_tick_batch
+from generator import EventGenerator, EventDictionary, TickStreamGenerator, generate_tick_batch
 
 
 ALLOWED_PAGE_PATHS = {
@@ -91,16 +91,144 @@ class TestEventGeneration:
         assert len(batch["device_events"]) == browser_count
         assert len(batch["geo_events"]) == browser_count
 
-    def test_generate_tick_batch_fills_requested_event_budget(self, event_dictionary, base_config):
-        """Тиковый батч набирает целевой бюджет из одного или нескольких визитов."""
+    def test_generate_tick_batch_uses_requested_event_budget(self, event_dictionary, base_config):
+        """Тиковый батч трактует входное число как событийный бюджет."""
         generator = EventGenerator(event_dictionary, base_config)
 
         batch = generate_tick_batch(generator, 20)
 
-        assert len(batch["browser_events"]) == 20
-        assert len(batch["location_events"]) == 20
-        assert len(batch["device_events"]) == 20
-        assert len(batch["geo_events"]) == 20
+        browser_count = len(batch["browser_events"])
+
+        assert 1 <= browser_count <= 20
+        assert len(batch["location_events"]) == browser_count
+        assert len(batch["device_events"]) == browser_count
+        assert len(batch["geo_events"]) == browser_count
+        assert len({event["click_id"] for event in batch["browser_events"]}) == browser_count
+
+    def test_tick_stream_keeps_long_window_intensity_near_event_budget(
+        self, event_dictionary, base_config
+    ):
+        """Длинное окно не разгоняется от событийного бюджета к бюджету визитов."""
+        config = replace(
+            base_config,
+            tick_seconds=5,
+            jitter_pct=0,
+            min_events_per_tick=17,
+            max_events_per_tick=17,
+            max_active_sessions=10_000,
+            population_max=10_001,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+        ticks_count = 12 * 60
+        total_events = 0
+
+        for tick_index in range(ticks_count):
+            batch = stream.generate_tick(
+                event_budget=17,
+                tick_started_at=tick_at + timedelta(seconds=5 * tick_index),
+            )
+            total_events += len(batch["browser_events"])
+
+        events_per_minute = total_events / (ticks_count * config.tick_seconds / 60)
+
+        assert events_per_minute < 300
+
+    def test_tick_stream_keeps_active_visit_between_ticks(self, event_dictionary, base_config):
+        """Один визит может выпускать события в нескольких последовательных тиках."""
+        config = replace(base_config, tick_seconds=60, max_session_events=5)
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        first_tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_tick = stream.generate_tick(event_budget=1, tick_started_at=first_tick_at)
+        second_tick = stream.generate_tick(
+            event_budget=0,
+            tick_started_at=first_tick_at + timedelta(seconds=config.tick_seconds),
+        )
+
+        first_click_id = first_tick["browser_events"][0]["click_id"]
+        second_click_ids = {
+            event["click_id"]
+            for event in second_tick["browser_events"]
+        }
+        second_timestamps = _parse_event_timestamps(second_tick)
+
+        assert first_click_id in second_click_ids
+        assert all(
+            timestamp < first_tick_at + timedelta(seconds=config.tick_seconds)
+            for timestamp in second_timestamps
+        )
+
+    def test_tick_stream_releases_only_matured_events(self, event_dictionary, base_config):
+        """Тик не выпускает будущие события активного визита."""
+        generator = EventGenerator(event_dictionary, base_config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_tick = stream.generate_tick(event_budget=1, tick_started_at=tick_at)
+        same_time_tick = stream.generate_tick(event_budget=0, tick_started_at=tick_at)
+
+        assert len(first_tick["browser_events"]) == 1
+        assert same_time_tick["browser_events"] == []
+        assert same_time_tick["location_events"] == []
+        assert same_time_tick["device_events"] == []
+        assert same_time_tick["geo_events"] == []
+
+    def test_tick_stream_does_not_reemit_finished_visit(self, event_dictionary, base_config):
+        """Завершённый визит больше не выпускает события в следующих тиках."""
+        config = replace(base_config, max_session_events=2)
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_tick = stream.generate_tick(event_budget=1, tick_started_at=tick_at)
+        final_tick = stream.generate_tick(
+            event_budget=0,
+            tick_started_at=tick_at + timedelta(hours=1),
+        )
+        later_tick = stream.generate_tick(
+            event_budget=0,
+            tick_started_at=tick_at + timedelta(hours=2),
+        )
+
+        click_id = first_tick["browser_events"][0]["click_id"]
+
+        assert {event["click_id"] for event in final_tick["browser_events"]} == {click_id}
+        assert later_tick["browser_events"] == []
+
+    def test_tick_stream_drops_births_when_active_limit_is_reached(
+        self, event_dictionary, base_config
+    ):
+        """При заполненном потолке новые рождения пропускаются без накопления бюджета."""
+        config = replace(
+            base_config,
+            max_session_events=2,
+            max_active_sessions=1,
+            population_max=2,
+        )
+        generator = EventGenerator(event_dictionary, config)
+        stream = TickStreamGenerator(generator)
+        tick_at = datetime(2026, 6, 11, 12, 0)
+
+        first_tick = stream.generate_tick(event_budget=5, tick_started_at=tick_at)
+        blocked_tick = stream.generate_tick(event_budget=5, tick_started_at=tick_at)
+        final_tick = stream.generate_tick(
+            event_budget=0,
+            tick_started_at=tick_at + timedelta(hours=1),
+        )
+        later_tick = stream.generate_tick(
+            event_budget=0,
+            tick_started_at=tick_at + timedelta(hours=2),
+        )
+
+        click_id = first_tick["browser_events"][0]["click_id"]
+
+        assert len(first_tick["browser_events"]) == 1
+        assert blocked_tick["browser_events"] == []
+        assert {event["click_id"] for event in final_tick["browser_events"]} == {click_id}
+        assert later_tick["browser_events"] == []
 
     def test_generate_batch_creates_one_connected_visit(self, event_dictionary, base_config):
         """Публичный вызов генератора создаёт один связанный визит."""

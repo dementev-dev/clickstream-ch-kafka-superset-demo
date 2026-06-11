@@ -34,7 +34,7 @@ from clickstream_generator.metrics import (
     METRICS_LAST_SUCCESS,
     METRICS_TICK_DURATION,
 )
-from clickstream_generator.runtime import generate_tick_batch
+from clickstream_generator.runtime import TickStreamGenerator, generate_tick_batch
 from clickstream_generator.service import GeneratorService, main
 from clickstream_generator.state import GeneratorState, _nested_list_to_tuple
 
@@ -59,6 +59,7 @@ __all__ = [
     "METRICS_EVENTS_TOTAL",
     "METRICS_LAST_SUCCESS",
     "METRICS_TICK_DURATION",
+    "TickStreamGenerator",
     "_import_kafka",
     "_nested_list_to_tuple",
     "_with_retry",

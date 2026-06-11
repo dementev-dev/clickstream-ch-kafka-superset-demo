@@ -29,6 +29,12 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="GEN_MAX_SESSION_EVENTS"):
             replace(base_config, max_session_events=0)
 
+    def test_max_active_sessions_must_be_less_than_population(self, base_config):
+        """Потолок активных визитов должен быть меньше потолка популяции."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="GEN_MAX_ACTIVE_SESSIONS"):
+            replace(base_config, max_active_sessions=10, population_max=10)
+
     def test_data_dir_must_exist(self, base_config):
         """data_dir должен существовать."""
         from dataclasses import replace
@@ -40,6 +46,7 @@ class TestConfigValidation:
         assert base_config.tick_seconds == 5
         assert base_config.lambda_base_per_min == 200
         assert base_config.jitter_pct == 20
+        assert base_config.max_active_sessions < base_config.population_max
 
 
 class TestConfigDefaults:

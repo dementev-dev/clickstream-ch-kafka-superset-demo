@@ -133,7 +133,7 @@ class GeneratorService:
 
                 try:
                     events_count = self.generator._calculate_events_count()
-                    logger.info(f"Generating ~{events_count} base events")
+                    logger.info(f"Generating with event budget ~{events_count}")
 
                     gen_start = time.time()
                     batch = generate_tick_batch(self.generator, events_count)
