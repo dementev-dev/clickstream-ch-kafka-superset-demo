@@ -31,6 +31,6 @@ Status: ready-for-agent
 ## Blocked by
 
 - `.scratch/feature-data-generator/issues/02-visit-page-path-and-monotonic-time.md`
+- `.scratch/feature-data-generator/issues/02-5-generator-service-cleanup.md`
 
 ## Comments
-
