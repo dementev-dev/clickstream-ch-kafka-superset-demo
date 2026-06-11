@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,62 @@ METRICS_LAST_SUCCESS = Gauge(
 )
 
 
+PAGE_START_DISTRIBUTION = [
+    ("/home", 0.59),
+    ("/product_a", 0.20),
+    ("/product_b", 0.14),
+    ("/cart", 0.04),
+    ("/payment", 0.02),
+    ("/confirmation", 0.01),
+]
+
+PAGE_TRANSITIONS = {
+    "/home": [
+        ("/home", 0.40),
+        ("/product_a", 0.28),
+        ("/product_b", 0.18),
+        ("/cart", 0.04),
+        (None, 0.10),
+    ],
+    "/product_a": [
+        ("/home", 0.30),
+        ("/product_a", 0.16),
+        ("/product_b", 0.18),
+        ("/cart", 0.27),
+        (None, 0.09),
+    ],
+    "/product_b": [
+        ("/home", 0.32),
+        ("/product_a", 0.15),
+        ("/product_b", 0.18),
+        ("/cart", 0.27),
+        (None, 0.08),
+    ],
+    "/cart": [
+        ("/home", 0.20),
+        ("/product_a", 0.12),
+        ("/product_b", 0.10),
+        ("/cart", 0.10),
+        ("/payment", 0.42),
+        (None, 0.06),
+    ],
+    "/payment": [
+        ("/home", 0.12),
+        ("/cart", 0.24),
+        ("/payment", 0.12),
+        ("/confirmation", 0.38),
+        (None, 0.14),
+    ],
+    "/confirmation": [
+        ("/home", 0.35),
+        ("/product_a", 0.15),
+        ("/product_b", 0.10),
+        ("/confirmation", 0.05),
+        (None, 0.35),
+    ],
+}
+
+
 # ---------------------------------------------------------------------------
 # Конфигурация через env
 # ---------------------------------------------------------------------------
@@ -98,6 +154,9 @@ class Config:
     )
     max_events_per_tick: int = field(
         default_factory=lambda: int(os.getenv("GEN_MAX_EVENTS_PER_TICK", "50"))
+    )
+    max_session_events: int = field(
+        default_factory=lambda: int(os.getenv("GEN_MAX_SESSION_EVENTS", "30"))
     )
 
     # Пути к данным
@@ -136,6 +195,8 @@ class Config:
             raise ValueError("GEN_TICK_SECONDS must be >= 1")
         if self.lambda_base_per_min < 1:
             raise ValueError("GEN_LAMBDA_BASE_PER_MIN must be >= 1")
+        if self.max_session_events < 1:
+            raise ValueError("GEN_MAX_SESSION_EVENTS must be >= 1")
         if not self.data_dir.exists():
             raise ValueError(f"Data directory does not exist: {self.data_dir}")
 
@@ -220,6 +281,44 @@ class EventGenerator:
         """Возвращает текущую метку времени в формате JSONL."""
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
+    def _format_timestamp(self, timestamp: datetime) -> str:
+        """Форматирует запланированную метку времени для JSONL."""
+        return timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    def _weighted_choice(self, choices: list[tuple[Any, float]]) -> Any:
+        """Разыгрывает значение по списку весов."""
+        point = self.rng.random()
+        cumulative = 0.0
+        for value, weight in choices:
+            cumulative += weight
+            if point < cumulative:
+                return value
+        return choices[-1][0]
+
+    def _generate_visit_path(self, max_events: int, min_events: int = 1) -> list[str]:
+        """Генерирует путь визита по страницам с защитой от бесконечных петель."""
+        page = self._weighted_choice(PAGE_START_DISTRIBUTION)
+        path = []
+
+        while page is not None and len(path) < max_events:
+            path.append(page)
+            page = self._weighted_choice(PAGE_TRANSITIONS[page])
+
+        while len(path) < min_events and len(path) < max_events:
+            transitions = [
+                (next_page, weight)
+                for next_page, weight in PAGE_TRANSITIONS[path[-1]]
+                if next_page is not None
+            ]
+            path.append(self._weighted_choice(transitions))
+
+        return path
+
+    def _visit_pause_seconds(self) -> float:
+        """Разыгрывает паузу между событиями визита."""
+        pause = self.rng.lognormvariate(math.log(45.0), 1.0)
+        return max(1.0, min(pause, 29 * 60.0))
+
     def _hour_factor(self) -> float:
         """Возвращает коэффициент интенсивности в зависимости от часа дня."""
         hour = datetime.now(timezone.utc).hour
@@ -264,7 +363,7 @@ class EventGenerator:
 
     def generate_batch(self, batch_size: int) -> dict[str, list[dict]]:
         """
-        Генерирует батч событий с сохранением связей.
+        Генерирует один визит с сохранением связей.
 
         Возвращает словарь {topic: [events]}
         """
@@ -287,38 +386,44 @@ class EventGenerator:
         if batch_size <= 0:
             return batch
 
+        max_visit_events = min(batch_size, self.config.max_session_events)
+        min_visit_events = min(2, max_visit_events)
+        visit_path = self._generate_visit_path(max_visit_events, min_visit_events)
+
         visit_candidates = [
             click_id for click_id, browser_events in self.dictionary.browser_by_click_id.items()
             if (
-                len(browser_events) >= batch_size
+                len(browser_events) >= len(visit_path)
                 and click_id in self.dictionary.device_by_click_id
                 and click_id in self.dictionary.geo_by_click_id
                 and all(
                     event["event_id"] in self.dictionary.location_by_event_id
-                    for event in browser_events[:batch_size]
+                    for event in browser_events[:len(visit_path)]
                 )
             )
         ]
         if visit_candidates:
             base_click_id = self.rng.choice(visit_candidates)
-            base_browser_events = self.dictionary.browser_by_click_id[base_click_id][:batch_size]
+            base_browser_events = self.dictionary.browser_by_click_id[base_click_id][:len(visit_path)]
         else:
             # Крайний случай для очень малого сида: сохраняем форму визита,
             # даже если приходится брать события с повторением.
             base_browser = self.rng.choice(self.dictionary.browser_events)
             base_click_id = base_browser["click_id"]
-            base_browser_events = [base_browser for _ in range(batch_size)]
+            base_browser_events = [base_browser for _ in range(len(visit_path))]
 
         base_device = self.dictionary.device_by_click_id.get(base_click_id)
         base_geo = self.dictionary.geo_by_click_id.get(base_click_id)
         new_click_id = self._new_uuid()
 
-        for base_browser in base_browser_events:
+        planned_timestamp = datetime.now(timezone.utc)
+
+        for base_browser, page_url_path in zip(base_browser_events, visit_path):
             base_location = self.dictionary.location_by_event_id.get(base_browser["event_id"])
 
             # Генерируем новые ID
             new_event_id = self._new_uuid()
-            new_timestamp = self._current_timestamp()
+            new_timestamp = self._format_timestamp(planned_timestamp)
 
             # Создаём новое браузерное событие
             browser_event = {
@@ -334,6 +439,8 @@ class EventGenerator:
                 location_event = {
                     **base_location,
                     "event_id": new_event_id,
+                    "page_url": f"http://www.dummywebsite.com{page_url_path}",
+                    "page_url_path": page_url_path,
                 }
                 batch["location_events"].append(location_event)
 
@@ -353,7 +460,37 @@ class EventGenerator:
                 }
                 batch["geo_events"].append(geo_event)
 
+            planned_timestamp += timedelta(seconds=self._visit_pause_seconds())
+
         return batch
+
+    def generate_tick_batch(self, event_budget: int) -> dict[str, list[dict]]:
+        """
+        Генерирует батч тика из одного или нескольких визитов.
+
+        `generate_batch()` остаётся публичным срезом одного визита. Для тика
+        нужно набрать рассчитанный бюджет событий, поэтому здесь несколько
+        визитов объединяются в один набор записей для публикации.
+        """
+        tick_batch = {
+            "browser_events": [],
+            "location_events": [],
+            "device_events": [],
+            "geo_events": [],
+        }
+
+        remaining_events = event_budget
+        while remaining_events > 0:
+            visit_batch = self.generate_batch(remaining_events)
+            generated_events = len(visit_batch["browser_events"])
+            if generated_events == 0:
+                break
+
+            for topic, events in visit_batch.items():
+                tick_batch[topic].extend(events)
+            remaining_events -= generated_events
+
+        return tick_batch
 
 
 # ---------------------------------------------------------------------------
@@ -923,9 +1060,9 @@ class GeneratorService:
                     events_count = self.generator._calculate_events_count()
                     logger.info(f"Generating ~{events_count} base events")
 
-                    # Генерируем батч
+                    # Генерируем тиковый батч из одного или нескольких визитов
                     gen_start = time.time()
-                    batch = self.generator.generate_batch(events_count)
+                    batch = self.generator.generate_tick_batch(events_count)
                     gen_duration = time.time() - gen_start
 
                     # Публикуем в Kafka

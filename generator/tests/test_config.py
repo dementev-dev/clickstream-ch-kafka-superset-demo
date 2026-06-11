@@ -23,6 +23,12 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="GEN_LAMBDA_BASE_PER_MIN"):
             replace(base_config, lambda_base_per_min=0)
 
+    def test_max_session_events_must_be_positive(self, base_config):
+        """max_session_events должен быть >= 1."""
+        from dataclasses import replace
+        with pytest.raises(ValueError, match="GEN_MAX_SESSION_EVENTS"):
+            replace(base_config, max_session_events=0)
+
     def test_data_dir_must_exist(self, base_config):
         """data_dir должен существовать."""
         from dataclasses import replace

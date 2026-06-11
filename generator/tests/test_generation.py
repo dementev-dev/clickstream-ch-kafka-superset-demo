@@ -3,10 +3,38 @@
 """
 
 import uuid
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
 from generator import EventGenerator, EventDictionary
+
+
+ALLOWED_PAGE_PATHS = {
+    "/home",
+    "/product_a",
+    "/product_b",
+    "/cart",
+    "/payment",
+    "/confirmation",
+}
+
+
+def _parse_event_timestamps(batch):
+    return [
+        datetime.fromisoformat(event["event_timestamp"].replace(" ", "T"))
+        for event in batch["browser_events"]
+    ]
+
+
+def _page_path_visits(generator, visits_count: int):
+    return [
+        [
+            event["page_url_path"]
+            for event in generator.generate_batch(30)["location_events"]
+        ]
+        for _ in range(visits_count)
+    ]
 
 
 class TestEventGeneration:
@@ -51,15 +79,28 @@ class TestEventGeneration:
         assert "device_events" in batch
         assert "geo_events" in batch
 
-    def test_generate_batch_size(self, event_dictionary, base_config):
-        """Батч содержит правильное количество событий."""
+    def test_generate_batch_respects_requested_visit_budget(self, event_dictionary, base_config):
+        """Визит не превышает запрошенный бюджет событий."""
         generator = EventGenerator(event_dictionary, base_config)
         batch = generator.generate_batch(10)
 
-        assert len(batch["browser_events"]) == 10
-        assert len(batch["location_events"]) == 10
-        assert len(batch["device_events"]) == 10
-        assert len(batch["geo_events"]) == 10
+        browser_count = len(batch["browser_events"])
+
+        assert 1 <= browser_count <= 10
+        assert len(batch["location_events"]) == browser_count
+        assert len(batch["device_events"]) == browser_count
+        assert len(batch["geo_events"]) == browser_count
+
+    def test_generate_tick_batch_fills_requested_event_budget(self, event_dictionary, base_config):
+        """Тиковый батч набирает целевой бюджет из одного или нескольких визитов."""
+        generator = EventGenerator(event_dictionary, base_config)
+
+        batch = generator.generate_tick_batch(20)
+
+        assert len(batch["browser_events"]) == 20
+        assert len(batch["location_events"]) == 20
+        assert len(batch["device_events"]) == 20
+        assert len(batch["geo_events"]) == 20
 
     def test_generate_batch_creates_one_connected_visit(self, event_dictionary, base_config):
         """Публичный вызов генератора создаёт один связанный визит."""
@@ -98,6 +139,17 @@ class TestEventGeneration:
         assert all(context == device_context[0] for context in device_context)
         assert all(context == geo_context[0] for context in geo_context)
 
+    def test_generate_batch_creates_multi_event_visit_when_budget_allows(
+        self, event_dictionary, base_config
+    ):
+        """Минимальный связанный визит не схлопывается в одно событие."""
+        config = replace(base_config, seed=2)
+        generator = EventGenerator(event_dictionary, config)
+
+        batch = generator.generate_batch(3)
+
+        assert len(batch["browser_events"]) >= 2
+
     def test_event_ids_are_new_uuids(self, event_dictionary, base_config):
         """event_id и click_id — новые UUID, не из оригинальных данных."""
         generator = EventGenerator(event_dictionary, base_config)
@@ -125,6 +177,106 @@ class TestEventGeneration:
         # Должен парситься как datetime
         dt = datetime.fromisoformat(timestamp.replace(" ", "T"))
         assert dt.year >= 2024
+
+    def test_visit_event_timestamps_strictly_increase(self, event_dictionary, base_config):
+        """Время событий внутри одного визита строго возрастает."""
+        generator = EventGenerator(event_dictionary, base_config)
+        batch = generator.generate_batch(8)
+
+        timestamps = _parse_event_timestamps(batch)
+
+        assert all(
+            previous < current
+            for previous, current in zip(timestamps, timestamps[1:])
+        )
+
+    def test_visit_event_timestamps_use_planned_user_pauses(self, event_dictionary, base_config):
+        """Метки времени визита разделены пользовательскими паузами, а не временем цикла."""
+        generator = EventGenerator(event_dictionary, base_config)
+        batch = generator.generate_batch(8)
+
+        timestamps = _parse_event_timestamps(batch)
+        pauses_seconds = [
+            (current - previous).total_seconds()
+            for previous, current in zip(timestamps, timestamps[1:])
+        ]
+
+        assert min(pauses_seconds) >= 1.0
+
+    def test_visit_path_uses_known_funnel_pages(self, event_dictionary, base_config):
+        """Путь визита состоит из страниц воронки."""
+        generator = EventGenerator(event_dictionary, base_config)
+        batch = generator.generate_batch(30)
+
+        page_paths = [event["page_url_path"] for event in batch["location_events"]]
+
+        assert page_paths
+        assert set(page_paths) <= ALLOWED_PAGE_PATHS
+
+    def test_visit_starts_from_calibrated_start_distribution(self, event_dictionary, base_config):
+        """Визиты стартуют не только с /home, а по стартовому распределению."""
+        generator = EventGenerator(event_dictionary, base_config)
+
+        visits = _page_path_visits(generator, 1000)
+        first_pages = [visit[0] for visit in visits]
+        home_share = first_pages.count("/home") / len(first_pages)
+        product_entry_share = (
+            first_pages.count("/product_a") + first_pages.count("/product_b")
+        ) / len(first_pages)
+
+        assert 0.54 <= home_share <= 0.64
+        assert product_entry_share >= 0.25
+
+    def test_visit_length_is_capped_by_session_limit(self, event_dictionary, base_config):
+        """Длина визита ограничена потолком, который защищает от петель."""
+        config = replace(base_config, max_session_events=4)
+        generator = EventGenerator(event_dictionary, config)
+
+        visits = _page_path_visits(generator, 200)
+
+        assert max(len(visit) for visit in visits) <= 4
+        assert any(len(visit) == 4 for visit in visits)
+
+    def test_visit_pauses_stay_below_session_timeout_scale(self, event_dictionary, base_config):
+        """Паузы внутри визита остаются меньше 30 минут, p95 — единицы минут."""
+        generator = EventGenerator(event_dictionary, base_config)
+        pauses_seconds = []
+
+        for _ in range(500):
+            timestamps = _parse_event_timestamps(generator.generate_batch(30))
+            pauses_seconds.extend(
+                (current - previous).total_seconds()
+                for previous, current in zip(timestamps, timestamps[1:])
+            )
+
+        pauses_seconds.sort()
+        p95 = pauses_seconds[int(len(pauses_seconds) * 0.95)]
+
+        assert max(pauses_seconds) < 30 * 60
+        assert p95 < 5 * 60
+
+    def test_confirmation_share_matches_seed_scale(self, event_dictionary, base_config):
+        """Около четверти визитов доходят до /confirmation."""
+        generator = EventGenerator(event_dictionary, base_config)
+
+        visits = _page_path_visits(generator, 1000)
+        confirmation_share = (
+            sum("/confirmation" in visit for visit in visits) / len(visits)
+        )
+
+        assert 0.20 <= confirmation_share <= 0.30
+
+    def test_visit_can_continue_after_confirmation(self, event_dictionary, base_config):
+        """/confirmation не обязан быть последним событием визита."""
+        generator = EventGenerator(event_dictionary, base_config)
+
+        visits = _page_path_visits(generator, 1000)
+
+        assert any(
+            page_path == "/confirmation" and index < len(visit) - 1
+            for visit in visits
+            for index, page_path in enumerate(visit)
+        )
 
     def test_links_consistency(self, event_dictionary, base_config):
         """Связи между событиями сохраняются."""
