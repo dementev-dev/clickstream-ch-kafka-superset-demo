@@ -3,7 +3,8 @@
 import logging
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 logger = logging.getLogger("generator")
@@ -25,7 +26,56 @@ def _require_keys(item: dict, keys: tuple[str, ...], label: str) -> None:
         raise ValueError(f"{label} missing fields: {', '.join(missing)}")
 
 
+def _parse_aware_utc(value: str, label: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        raise ValueError(f"{label} must include timezone")
+    return timestamp.astimezone(timezone.utc)
+
+
+def _validate_resume_fields(data: dict) -> None:
+    _require_keys(
+        data,
+        (
+            "model_timestamp",
+            "wall_timestamp",
+            "model_time_speed",
+            "model_timezone",
+            "model_t0",
+            "gen_seed",
+        ),
+        "state",
+    )
+    _parse_aware_utc(data["model_timestamp"], "model_timestamp")
+    _parse_aware_utc(data["wall_timestamp"], "wall_timestamp")
+    _parse_aware_utc(data["model_t0"], "model_t0")
+
+    model_time_speed = data["model_time_speed"]
+    if (
+        isinstance(model_time_speed, bool)
+        or not isinstance(model_time_speed, int | float)
+        or model_time_speed <= 0
+    ):
+        raise ValueError("model_time_speed must be a positive number")
+
+    model_timezone = data["model_timezone"]
+    if not isinstance(model_timezone, str) or not model_timezone:
+        raise ValueError("model_timezone must be a string")
+    try:
+        ZoneInfo(model_timezone)
+    except ZoneInfoNotFoundError as e:
+        raise ValueError(f"unknown model_timezone: {model_timezone}") from e
+
+    gen_seed = data["gen_seed"]
+    if gen_seed is not None:
+        if isinstance(gen_seed, bool) or not isinstance(gen_seed, int):
+            raise ValueError("gen_seed must be an integer or null")
+
+
 def _validate_v2_payload(data: dict) -> None:
+    _validate_resume_fields(data)
     population = data.get("population")
     active_visits = data.get("active_visits")
     pending_visit_births = data.get("pending_visit_births", 0.0)
@@ -129,9 +179,29 @@ class GeneratorState:
     last_batch_id: str
     last_timestamp: datetime
     version: str = STATE_VERSION
+    model_timestamp: datetime | None = None
+    wall_timestamp: datetime | None = None
+    model_time_speed: float = 1.0
+    model_timezone: str = "UTC"
+    model_t0: datetime | None = None
+    gen_seed: int | None = None
     population: list[dict] = field(default_factory=list)
     active_visits: list[dict] = field(default_factory=list)
     pending_visit_births: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.model_timestamp is None:
+            self.model_timestamp = self._as_aware_utc(self.last_timestamp)
+        if self.wall_timestamp is None:
+            self.wall_timestamp = self._as_aware_utc(self.last_timestamp)
+        if self.model_t0 is None:
+            self.model_t0 = self.model_timestamp
+
+    @staticmethod
+    def _as_aware_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     def to_dict(self) -> dict:
         """Конвертирует в словарь для JSON-сериализации."""
@@ -140,6 +210,12 @@ class GeneratorState:
             "rng_state": self.rng_state,
             "last_batch_id": self.last_batch_id,
             "last_timestamp": self.last_timestamp.isoformat(),
+            "model_timestamp": self.model_timestamp.isoformat(),
+            "wall_timestamp": self.wall_timestamp.isoformat(),
+            "model_time_speed": self.model_time_speed,
+            "model_timezone": self.model_timezone,
+            "model_t0": self.model_t0.isoformat(),
+            "gen_seed": self.gen_seed,
             "version": self.version,
             "population": self.population,
             "active_visits": self.active_visits,
@@ -160,6 +236,12 @@ class GeneratorState:
                 )
                 raise ValueError(f"unsupported state version: {version}")
             _validate_v2_payload(data)
+            model_timestamp = _parse_aware_utc(
+                data["model_timestamp"],
+                "model_timestamp",
+            )
+            wall_timestamp = _parse_aware_utc(data["wall_timestamp"], "wall_timestamp")
+            model_t0 = _parse_aware_utc(data["model_t0"], "model_t0")
 
             rng_state_raw = data.get("rng_state")
             if not rng_state_raw:
@@ -184,9 +266,15 @@ class GeneratorState:
                 rng_state=rng_state,
                 last_batch_id=data.get("last_batch_id", ""),
                 last_timestamp=datetime.fromisoformat(
-                    data.get("last_timestamp", "1970-01-01T00:00:00+00:00")
+                    data.get("last_timestamp", data["model_timestamp"])
                 ),
                 version=version,
+                model_timestamp=model_timestamp,
+                wall_timestamp=wall_timestamp,
+                model_time_speed=float(data["model_time_speed"]),
+                model_timezone=data["model_timezone"],
+                model_t0=model_t0,
+                gen_seed=data["gen_seed"],
                 population=data.get("population", []),
                 active_visits=data.get("active_visits", []),
                 pending_visit_births=data.get("pending_visit_births", 0.0),

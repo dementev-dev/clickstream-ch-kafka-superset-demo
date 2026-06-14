@@ -73,14 +73,13 @@ class GeneratorService:
                 restored_state = self.state_manager.load()
                 if restored_state:
                     try:
-                        self.generator.rng.setstate(restored_state.rng_state)
-                        self.stream.restore_state(
+                        self._restore_live_state(
                             restored_state,
-                            restarted_at=datetime.now(timezone.utc),
+                            wall_now_utc=datetime.now(timezone.utc),
                         )
-                        self._tick = restored_state.tick
                         logger.info(
                             f"Restored state: continuing from tick {self._tick}, "
+                            f"model_time={self._model_time.isoformat()}, "
                             f"last_batch_id={restored_state.last_batch_id}"
                         )
                     except Exception as e:
@@ -115,21 +114,92 @@ class GeneratorService:
         if self.state_manager:
             self.state_manager.close()
 
+    def restore_from_startup_history(
+        self,
+        state,
+        model_t_end: datetime,
+    ) -> None:
+        """Восстанавливает слепок стартовой истории ровно от T_end."""
+        self._restore_state_snapshot(state, resume_model_at=model_t_end)
+
+    def _restore_live_state(self, state, wall_now_utc: datetime) -> None:
+        """Восстанавливает live-state с учётом прошедшего настенного времени."""
+        self._validate_live_state_config(state)
+        resume_model_at = self._calculate_live_resume_model_at(
+            state,
+            wall_now_utc=wall_now_utc,
+        )
+        self._restore_state_snapshot(state, resume_model_at=resume_model_at)
+
+    def _restore_state_snapshot(self, state, resume_model_at: datetime) -> None:
+        """Применяет state к генератору и тиковому слою."""
+        resume_model_at = self._as_aware_utc(resume_model_at)
+        self.generator.rng.setstate(state.rng_state)
+        self.stream.restore_state(state, resume_model_at=resume_model_at)
+        self._tick = state.tick
+        self._model_time = resume_model_at
+
+    def _calculate_live_resume_model_at(
+        self,
+        state,
+        wall_now_utc: datetime,
+    ) -> datetime:
+        """Считает модельную точку live-восстановления по state v2."""
+        wall_now_utc = self._as_aware_utc(wall_now_utc)
+        wall_saved_at = self._as_aware_utc(state.wall_timestamp)
+        idle_seconds = max(0.0, (wall_now_utc - wall_saved_at).total_seconds())
+        return self._as_aware_utc(state.model_timestamp) + timedelta(
+            seconds=idle_seconds * state.model_time_speed,
+        )
+
+    def _validate_live_state_config(self, state) -> None:
+        """Проверяет, что state относится к текущей конфигурации live-запуска."""
+        mismatches = []
+        if state.gen_seed != self.config.seed:
+            mismatches.append("gen_seed")
+        if self._as_aware_utc(state.model_t0) != self.config.model_t0:
+            mismatches.append("model_t0")
+        if state.model_timezone != self.config.model_timezone:
+            mismatches.append("model_timezone")
+        if abs(state.model_time_speed - self.config.model_time_speed) > 1e-9:
+            mismatches.append("model_time_speed")
+
+        if mismatches:
+            raise ValueError(
+                "state config mismatch: " + ", ".join(mismatches)
+            )
+
+    @staticmethod
+    def _as_aware_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     def _save_state(self, batch_id: str) -> None:
         """Сохраняет текущее состояние генератора."""
         if not self.state_manager or not self.config.state_enabled:
             return
 
         try:
+            wall_now = datetime.now(timezone.utc)
             state = self.stream.to_state(
                 tick=self._tick,
                 rng_state=self.generator.rng.getstate(),
                 last_batch_id=batch_id,
-                last_timestamp=datetime.now(timezone.utc),
+                last_timestamp=self._model_time,
+                model_timestamp=self._model_time,
+                wall_timestamp=wall_now,
+                model_time_speed=self.config.model_time_speed,
+                model_timezone=self.config.model_timezone,
+                model_t0=self.config.model_t0,
+                gen_seed=self.config.seed,
             )
             self.state_manager.save(state)
             self.state_manager.flush()
-            logger.debug(f"Saved state: tick={self._tick}, batch_id={batch_id}")
+            logger.debug(
+                f"Saved state: tick={self._tick}, "
+                f"model_time={self._model_time.isoformat()}, batch_id={batch_id}"
+            )
         except Exception as e:
             logger.warning(f"Failed to save state: {e}")
             METRICS_ERRORS_TOTAL.labels(topic="state").inc()
@@ -179,8 +249,8 @@ class GeneratorService:
 
                     if status in ("success", "partial"):
                         METRICS_LAST_SUCCESS.set_to_current_time()
-                        self._save_state(batch_id)
                         self._advance_model_time()
+                        self._save_state(batch_id)
 
                     self.publisher.flush()
                     pub_duration = time.time() - pub_start

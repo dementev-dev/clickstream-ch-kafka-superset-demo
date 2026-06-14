@@ -25,6 +25,12 @@ def _make_valid_v2_state_data() -> dict:
         "rng_state": list(_make_valid_rng_state(42)),
         "last_batch_id": "v2",
         "last_timestamp": "2026-06-11T12:00:00+00:00",
+        "model_timestamp": "2026-01-01T10:00:00+00:00",
+        "wall_timestamp": "2026-06-11T12:00:00+00:00",
+        "model_time_speed": 10,
+        "model_timezone": "UTC",
+        "model_t0": "2026-01-01T00:00:00+00:00",
+        "gen_seed": 42,
         "version": "2.0",
         "population": [
             {
@@ -59,6 +65,19 @@ def _minimal_population() -> list[dict]:
     ]
 
 
+def _with_resume_fields(data: dict) -> dict:
+    """Добавляет обязательные поля state v2, не связанные с проверяемой ошибкой."""
+    return {
+        **data,
+        "model_timestamp": "2026-01-01T10:00:00+00:00",
+        "wall_timestamp": "2024-01-01T00:00:00+00:00",
+        "model_time_speed": 10,
+        "model_timezone": "UTC",
+        "model_t0": "2026-01-01T00:00:00+00:00",
+        "gen_seed": 42,
+    }
+
+
 class TestGeneratorState:
     """Тесты структуры состояния генератора."""
 
@@ -72,6 +91,12 @@ class TestGeneratorState:
             rng_state=rng_state,
             last_batch_id="abc123",
             last_timestamp=now,
+            model_timestamp=now,
+            wall_timestamp=now,
+            model_time_speed=10,
+            model_timezone="UTC",
+            model_t0=now,
+            gen_seed=42,
             version="2.0",
         )
 
@@ -79,6 +104,12 @@ class TestGeneratorState:
         assert state.rng_state == rng_state
         assert state.last_batch_id == "abc123"
         assert state.last_timestamp == now
+        assert state.model_timestamp == now
+        assert state.wall_timestamp == now
+        assert state.model_time_speed == 10
+        assert state.model_timezone == "UTC"
+        assert state.model_t0 == now
+        assert state.gen_seed == 42
         assert state.version == "2.0"
 
     def test_default_version(self):
@@ -113,6 +144,12 @@ class TestGeneratorState:
         assert data["tick"] == 42
         assert data["last_batch_id"] == "abc123"
         assert data["last_timestamp"] == now.isoformat()
+        assert data["model_timestamp"] == now.isoformat()
+        assert data["wall_timestamp"] == now.isoformat()
+        assert data["model_time_speed"] == 1.0
+        assert data["model_timezone"] == "UTC"
+        assert data["model_t0"] == now.isoformat()
+        assert data["gen_seed"] is None
         assert data["version"] == "2.0"
 
         # Проверяем что rng_state сериализован как tuple (JSON-safe, без pickle)
@@ -147,6 +184,12 @@ class TestGeneratorState:
         assert restored.rng_state == original.rng_state
         assert restored.last_batch_id == original.last_batch_id
         assert restored.last_timestamp == original.last_timestamp
+        assert restored.model_timestamp == original.model_timestamp
+        assert restored.wall_timestamp == original.wall_timestamp
+        assert restored.model_time_speed == original.model_time_speed
+        assert restored.model_timezone == original.model_timezone
+        assert restored.model_t0 == original.model_t0
+        assert restored.gen_seed == original.gen_seed
         assert restored.version == original.version
 
     def test_roundtrip_with_real_random(self):
@@ -190,6 +233,12 @@ class TestGeneratorState:
             rng_state=rng_state,
             last_batch_id="batch-7",
             last_timestamp=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+            model_timestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+            wall_timestamp=datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc),
+            model_time_speed=10,
+            model_timezone="Europe/Moscow",
+            model_t0=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+            gen_seed=42,
             version="2.0",
             population=[
                 {
@@ -220,6 +269,12 @@ class TestGeneratorState:
         assert restored.population == state.population
         assert restored.active_visits == state.active_visits
         assert restored.pending_visit_births == 0.5
+        assert restored.model_timestamp == state.model_timestamp
+        assert restored.wall_timestamp == state.wall_timestamp
+        assert restored.model_time_speed == 10
+        assert restored.model_timezone == "Europe/Moscow"
+        assert restored.model_t0 == state.model_t0
+        assert restored.gen_seed == 42
 
 
 class TestGeneratorStateValidation:
@@ -238,7 +293,7 @@ class TestGeneratorStateValidation:
 
     def test_from_dict_invalid_rng_state_raises(self):
         """from_dict выбрасывает исключение при невалидном rng_state."""
-        data = {
+        data = _with_resume_fields({
             "tick": 42,
             "rng_state": "not_a_tuple",
             "last_batch_id": "test",
@@ -246,14 +301,14 @@ class TestGeneratorStateValidation:
             "version": "2.0",
             "population": _minimal_population(),
             "active_visits": [],
-        }
+        })
 
         with pytest.raises(ValueError):
             GeneratorState.from_dict(data)
 
     def test_from_dict_insufficient_rng_state_raises(self):
         """from_dict выбрасывает исключение при коротком rng_state."""
-        data = {
+        data = _with_resume_fields({
             "tick": 42,
             "rng_state": [1],  # Слишком короткий
             "last_batch_id": "test",
@@ -261,37 +316,37 @@ class TestGeneratorStateValidation:
             "version": "2.0",
             "population": _minimal_population(),
             "active_visits": [],
-        }
+        })
 
         with pytest.raises(ValueError):
             GeneratorState.from_dict(data)
 
     def test_from_dict_invalid_setstate_raises(self):
         """from_dict выбрасывает исключение если setstate падает."""
-        data = {
+        data = _with_resume_fields({
             "tick": 42,
             "rng_state": [999, [1, 2, 3], None],  # Невалидный state
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
             "version": "2.0",
-            "population": [],
+            "population": _minimal_population(),
             "active_visits": [],
-        }
+        })
 
         with pytest.raises(ValueError):
             GeneratorState.from_dict(data)
 
     def test_from_dict_safe_returns_none_on_invalid(self):
         """from_dict_safe возвращает None при невалидных данных."""
-        data = {
+        data = _with_resume_fields({
             "tick": 42,
             "rng_state": "invalid",
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
             "version": "2.0",
-            "population": [],
+            "population": _minimal_population(),
             "active_visits": [],
-        }
+        })
 
         result = GeneratorState.from_dict_safe(data)
         assert result is None
@@ -304,6 +359,12 @@ class TestGeneratorStateValidation:
             "rng_state": list(rng.getstate()),  # JSON сериализует tuple как list
             "last_batch_id": "test",
             "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "model_timestamp": "2026-01-01T10:00:00+00:00",
+            "wall_timestamp": "2024-01-01T00:00:00+00:00",
+            "model_time_speed": 10,
+            "model_timezone": "UTC",
+            "model_t0": "2026-01-01T00:00:00+00:00",
+            "gen_seed": 42,
             "version": "2.0",
             "population": _minimal_population(),
             "active_visits": [],
@@ -312,6 +373,43 @@ class TestGeneratorStateValidation:
         result = GeneratorState.from_dict_safe(data)
         assert result is not None
         assert result.tick == 42
+        assert result.model_timestamp == datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        assert result.gen_seed == 42
+
+    def test_from_dict_safe_returns_none_on_invalid_gen_seed(self):
+        """gen_seed в JSON state должен быть числом или null."""
+        data = _make_valid_v2_state_data()
+        data["gen_seed"] = "42"
+
+        result = GeneratorState.from_dict_safe(data)
+
+        assert result is None
+
+    def test_from_dict_safe_returns_none_on_bool_model_time_speed(self):
+        """model_time_speed не принимает bool как числовую скорость."""
+        data = _make_valid_v2_state_data()
+        data["model_time_speed"] = True
+
+        result = GeneratorState.from_dict_safe(data)
+
+        assert result is None
+
+    def test_from_dict_safe_returns_none_without_model_resume_fields(self):
+        """State v2 без связки модельного и настенного времени несовместим."""
+        rng = random.Random(42)
+        data = {
+            "tick": 42,
+            "rng_state": list(rng.getstate()),
+            "last_batch_id": "test",
+            "last_timestamp": "2024-01-01T00:00:00+00:00",
+            "version": "2.0",
+            "population": _minimal_population(),
+            "active_visits": [],
+        }
+
+        result = GeneratorState.from_dict_safe(data)
+
+        assert result is None
 
     def test_from_dict_rejects_old_state_without_version(self):
         """from_dict не восстанавливает старое state v1 без версии."""

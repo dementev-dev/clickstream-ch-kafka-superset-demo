@@ -340,7 +340,9 @@ class TestEventGeneration:
             last_timestamp=tick_at,
         )
         visit_state = state.active_visits[0]
+        original_visit = stream.active_visits[0]
         started_at = datetime.fromisoformat(visit_state["started_at"])
+        next_index = visit_state["next_index"]
         planned_timestamps = {
             (started_at + timedelta(microseconds=offset_us)).strftime(
                 "%Y-%m-%d %H:%M:%S.%f"
@@ -366,6 +368,19 @@ class TestEventGeneration:
 
         assert resumed_timestamps
         assert set(resumed_timestamps).issubset(planned_timestamps)
+        assert {event["click_id"] for event in resumed["browser_events"]} == {
+            visit_state["click_id"]
+        }
+        assert [
+            event["page_url_path"]
+            for event in resumed["location_events"]
+        ] == visit_state["page_url_paths"][next_index:next_index + len(resumed_timestamps)]
+        assert resumed["device_events"] == original_visit.batch["device_events"][
+            next_index:next_index + len(resumed_timestamps)
+        ]
+        assert resumed["geo_events"] == original_visit.batch["geo_events"][
+            next_index:next_index + len(resumed_timestamps)
+        ]
         assert all(
             datetime.fromisoformat(timestamp.replace(" ", "T")) <= tick_at + timedelta(minutes=29)
             for timestamp in resumed_timestamps

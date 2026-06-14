@@ -5,7 +5,7 @@
 import logging
 import random
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from time import sleep as real_sleep
 from unittest.mock import MagicMock, patch
 
@@ -315,6 +315,12 @@ class TestGeneratorServiceStateV2:
             rng_state=source_generator.rng.getstate(),
             last_batch_id="batch-3",
             last_timestamp=tick_at,
+            model_timestamp=tick_at.replace(tzinfo=timezone.utc),
+            wall_timestamp=tick_at.replace(tzinfo=timezone.utc),
+            model_time_speed=base_config.model_time_speed,
+            model_timezone=base_config.model_timezone,
+            model_t0=base_config.model_t0,
+            gen_seed=base_config.seed,
         )
 
         state_manager = MagicMock()
@@ -337,6 +343,99 @@ class TestGeneratorServiceStateV2:
         assert service.stream.population_user_ids == source_stream.population_user_ids
         assert service.stream.active_visit_count == source_stream.active_visit_count
 
+    def test_start_restores_model_time_from_state_wall_delta(
+        self, base_config, event_dictionary
+    ):
+        """Live-восстановление считает точку модели из сохранённой wall-метки."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        wall_saved_at = datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc)
+        wall_restarted_at = wall_saved_at + timedelta(seconds=30)
+        config = replace(
+            base_config,
+            model_t0=model_t0,
+            model_time_speed=10,
+            tick_seconds=60,
+        )
+        source_generator = EventGenerator(event_dictionary, config)
+        source_stream = TickStreamGenerator(source_generator)
+        source_stream.generate_tick(event_budget=10, tick_started_at=model_t0)
+        state = source_stream.to_state(
+            tick=3,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="batch-3",
+            last_timestamp=model_t0,
+            model_timestamp=model_t0,
+            wall_timestamp=wall_saved_at,
+            model_time_speed=config.model_time_speed,
+            model_timezone=config.model_timezone,
+            model_t0=config.model_t0,
+            gen_seed=config.seed,
+        )
+        state_manager = MagicMock()
+        state_manager.load.return_value = state
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return wall_restarted_at.replace(tzinfo=None)
+                return wall_restarted_at.astimezone(tz)
+
+        with patch("clickstream_generator.service.start_http_server"), \
+             patch("clickstream_generator.service.ensure_topics"), \
+             patch("clickstream_generator.service.KafkaPublisher"), \
+             patch("clickstream_generator.service.KafkaBatchHistory"), \
+             patch(
+                 "clickstream_generator.service.KafkaStateManager",
+                 return_value=state_manager,
+             ), \
+             patch("clickstream_generator.service.datetime", FrozenDateTime), \
+             patch.object(GeneratorService, "_main_loop", return_value=None):
+
+            service = GeneratorService(config)
+            service.start()
+
+        assert service._tick == 3
+        assert service._model_time == model_t0 + timedelta(seconds=300)
+        assert service.stream.active_visit_count == source_stream.active_visit_count
+
+    def test_restore_from_startup_history_uses_passed_model_point_without_wall_delta(
+        self, base_config, event_dictionary
+    ):
+        """Стартовая история продолжает с T_end, а не с wall-простоя."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        model_t_end = model_t0 + timedelta(minutes=5)
+        old_wall_saved_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        config = replace(
+            base_config,
+            model_t0=model_t0,
+            model_time_speed=3600,
+            tick_seconds=60,
+            max_session_events=5,
+        )
+        source_generator = EventGenerator(event_dictionary, config)
+        source_stream = TickStreamGenerator(source_generator)
+        source_stream.generate_tick(event_budget=10, tick_started_at=model_t_end)
+        state = source_stream.to_state(
+            tick=99,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="history-end",
+            last_timestamp=model_t_end,
+            model_timestamp=model_t_end,
+            wall_timestamp=old_wall_saved_at,
+            model_time_speed=config.model_time_speed,
+            model_timezone=config.model_timezone,
+            model_t0=config.model_t0,
+            gen_seed=config.seed,
+        )
+
+        service = GeneratorService(config)
+        service.restore_from_startup_history(state, model_t_end=model_t_end)
+
+        assert service._tick == 99
+        assert service._model_time == model_t_end
+        assert service.stream.active_visit_count == source_stream.active_visit_count
+
     def test_save_state_writes_tick_stream_state_v2(self, base_config):
         """Сервис сохраняет v2-снимок тикового слоя."""
         service = GeneratorService(base_config)
@@ -344,14 +443,61 @@ class TestGeneratorServiceStateV2:
         tick_at = datetime.now(timezone.utc).replace(tzinfo=None)
         service.stream.generate_tick(event_budget=10, tick_started_at=tick_at)
         service._tick = 1
+        service._model_time = tick_at.replace(tzinfo=timezone.utc)
 
         service._save_state("batch-1")
 
         saved_state = service.state_manager.save.call_args.args[0]
         assert saved_state.version == "2.0"
+        assert saved_state.model_timestamp == tick_at.replace(tzinfo=timezone.utc)
+        assert saved_state.wall_timestamp.tzinfo is not None
+        assert saved_state.model_time_speed == base_config.model_time_speed
+        assert saved_state.model_timezone == base_config.model_timezone
+        assert saved_state.model_t0 == base_config.model_t0
+        assert saved_state.gen_seed == base_config.seed
         assert saved_state.population
         assert saved_state.active_visits
         service.state_manager.flush.assert_called_once()
+
+    def test_incompatible_seed_state_starts_fresh(self, base_config, event_dictionary, caplog):
+        """State от другого GEN_SEED не смешивается с текущим запуском."""
+        source_config = replace(base_config, seed=7)
+        source_generator = EventGenerator(event_dictionary, source_config)
+        source_stream = TickStreamGenerator(source_generator)
+        tick_at = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        source_stream.generate_tick(event_budget=10, tick_started_at=tick_at)
+        state = source_stream.to_state(
+            tick=5,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="other-seed",
+            last_timestamp=tick_at,
+            model_timestamp=tick_at,
+            wall_timestamp=datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc),
+            model_time_speed=base_config.model_time_speed,
+            model_timezone=base_config.model_timezone,
+            model_t0=base_config.model_t0,
+            gen_seed=source_config.seed,
+        )
+        state_manager = MagicMock()
+        state_manager.load.return_value = state
+
+        with patch("clickstream_generator.service.start_http_server"), \
+             patch("clickstream_generator.service.ensure_topics"), \
+             patch("clickstream_generator.service.KafkaPublisher"), \
+             patch("clickstream_generator.service.KafkaBatchHistory"), \
+             patch(
+                 "clickstream_generator.service.KafkaStateManager",
+                 return_value=state_manager,
+             ), \
+             patch.object(GeneratorService, "_main_loop", return_value=None), \
+             caplog.at_level(logging.WARNING, logger="generator"):
+
+            service = GeneratorService(base_config)
+            service.start()
+
+        assert service._tick == 0
+        assert service._model_time == base_config.model_t0
+        assert "state config mismatch: gen_seed" in caplog.text
 
     def test_state_reset_skips_loading_saved_state(self, base_config):
         """GEN_STATE_RESET=true запускает сервис с чистого состояния."""
@@ -382,6 +528,12 @@ class TestGeneratorServiceStateV2:
             rng_state=random.Random(42).getstate(),
             last_batch_id="bad-v2",
             last_timestamp=datetime.now(timezone.utc),
+            model_timestamp=base_config.model_t0,
+            wall_timestamp=datetime.now(timezone.utc),
+            model_time_speed=base_config.model_time_speed,
+            model_timezone=base_config.model_timezone,
+            model_t0=base_config.model_t0,
+            gen_seed=base_config.seed,
             population=[
                 {
                     "user_domain_id": "user-unknown",

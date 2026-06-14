@@ -175,6 +175,12 @@ class TickStreamGenerator:
         rng_state: tuple,
         last_batch_id: str,
         last_timestamp: datetime,
+        model_timestamp: datetime | None = None,
+        wall_timestamp: datetime | None = None,
+        model_time_speed: float = 1.0,
+        model_timezone: str = "UTC",
+        model_t0: datetime | None = None,
+        gen_seed: int | None = None,
     ) -> GeneratorState:
         """Возвращает JSON-сериализуемый снимок тикового слоя."""
         return GeneratorState(
@@ -182,6 +188,12 @@ class TickStreamGenerator:
             rng_state=rng_state,
             last_batch_id=last_batch_id,
             last_timestamp=last_timestamp,
+            model_timestamp=model_timestamp,
+            wall_timestamp=wall_timestamp,
+            model_time_speed=model_time_speed,
+            model_timezone=model_timezone,
+            model_t0=model_t0,
+            gen_seed=gen_seed,
             population=[
                 {
                     "user_domain_id": user.user_domain_id,
@@ -220,6 +232,7 @@ class TickStreamGenerator:
     def restore_state(
         self,
         state: GeneratorState,
+        resume_model_at: datetime | None = None,
         restarted_at: datetime | None = None,
     ) -> None:
         """Восстанавливает популяцию и активные визиты из state v2."""
@@ -231,17 +244,17 @@ class TickStreamGenerator:
 
         self.population.users = users
         self.active_visits = []
-        restarted_time = (
-            _normalize_tick_time(restarted_at)
-            if restarted_at is not None
+        model_resume_time = (
+            _normalize_tick_time(resume_model_at or restarted_at)
+            if resume_model_at is not None or restarted_at is not None
             else None
         )
         for item in state.active_visits:
             visit = self._visit_from_state(item, users_by_id)
-            if self._is_overdue_after_restart(visit, restarted_time):
+            if self._is_overdue_after_restart(visit, model_resume_time):
                 self.population.finish_visit(
                     visit.user,
-                    self._last_released_at(visit, state.last_timestamp),
+                    self._last_released_at(visit, state.model_timestamp),
                 )
                 continue
             self.active_visits.append(visit)
