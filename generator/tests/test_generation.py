@@ -6,7 +6,7 @@ import json
 import random
 import uuid
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from generator import (
@@ -16,6 +16,7 @@ from generator import (
     TickStreamGenerator,
     calculate_events_count,
     generate_tick_batch,
+    hour_factor,
 )
 
 
@@ -1030,14 +1031,19 @@ class TestEventGeneration:
 class TestPoissonDistribution:
     """Тесты статистической модели."""
 
-    def test_event_budget_mean_follows_lambda_and_hour_factor(
-        self, base_config, monkeypatch
-    ):
+    def test_hour_factor_uses_model_timezone(self):
+        """Дневной коэффициент считается по заданному часовому поясу модели."""
+        assert hour_factor(
+            datetime(2026, 1, 1, 2, 30, tzinfo=timezone.utc),
+            "Europe/Moscow",
+        ) == 0.7
+        assert hour_factor(
+            datetime(2026, 1, 1, 6, 30, tzinfo=timezone.utc),
+            "Europe/Moscow",
+        ) == 1.2
+
+    def test_event_budget_mean_follows_lambda_and_hour_factor(self, base_config):
         """Средний событийный бюджет следует λ и часовому коэффициенту."""
-        monkeypatch.setattr(
-            "clickstream_generator.intensity.hour_factor",
-            lambda: 1.2,
-        )
         config = replace(
             base_config,
             tick_seconds=60,
@@ -1045,6 +1051,8 @@ class TestPoissonDistribution:
             jitter_pct=0,
             min_events_per_tick=1,
             max_events_per_tick=100,
+            model_t0=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+            model_timezone="UTC",
         )
         rng = random.Random(config.seed)
 
@@ -1053,20 +1061,16 @@ class TestPoissonDistribution:
 
         assert mean_budget == pytest.approx(30 * 1.2, rel=0.15)
 
-    def test_default_tick_budget_floor_does_not_outgrow_target_lambda(
-        self, base_config, monkeypatch
-    ):
+    def test_default_tick_budget_floor_does_not_outgrow_target_lambda(self, base_config):
         """Дефолтная нижняя граница бюджета не разгоняет lambda=30 на тике 5 секунд."""
-        monkeypatch.setattr(
-            "clickstream_generator.intensity.hour_factor",
-            lambda: 1.0,
-        )
         config = replace(
             base_config,
             tick_seconds=5,
             lambda_base_per_min=30,
             jitter_pct=0,
             max_events_per_tick=50,
+            model_t0=datetime(2026, 1, 1, 7, 0, tzinfo=timezone.utc),
+            model_timezone="UTC",
         )
         rng = random.Random(config.seed)
 
@@ -1074,6 +1078,69 @@ class TestPoissonDistribution:
         events_per_minute = sum(samples) / len(samples) * 60 / config.tick_seconds
 
         assert events_per_minute == pytest.approx(config.lambda_base_per_min, rel=0.20)
+
+    def test_event_budget_uses_model_tick_duration(self, base_config):
+        """При ускорении событийный бюджет растёт по модельной длительности тика."""
+        base = replace(
+            base_config,
+            tick_seconds=60,
+            lambda_base_per_min=30,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=10_000,
+            model_time_speed=1,
+        )
+        accelerated = replace(base, model_time_speed=10)
+        model_tick_at = datetime(2026, 1, 1, 7, 0)
+
+        normal_rng = random.Random(base.seed)
+        accelerated_rng = random.Random(accelerated.seed)
+        normal_samples = [
+            calculate_events_count(base, normal_rng, now=model_tick_at)
+            for _ in range(300)
+        ]
+        accelerated_samples = [
+            calculate_events_count(accelerated, accelerated_rng, now=model_tick_at)
+            for _ in range(300)
+        ]
+
+        normal_mean = sum(normal_samples) / len(normal_samples)
+        accelerated_mean = sum(accelerated_samples) / len(accelerated_samples)
+
+        assert accelerated_mean / normal_mean == pytest.approx(10, rel=0.15)
+
+    def test_large_event_budget_does_not_stick_on_knuth_underflow(self, base_config):
+        """Для λ > 1000 средний бюджет растёт вместе с целевой интенсивностью."""
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            lambda_base_per_min=1200,
+            jitter_pct=0,
+            min_events_per_tick=0,
+            max_events_per_tick=10_000,
+            model_t0=datetime(2026, 1, 1, 7, 0, tzinfo=timezone.utc),
+            model_timezone="UTC",
+        )
+        rng = random.Random(config.seed)
+
+        samples = [calculate_events_count(config, rng) for _ in range(500)]
+        mean_budget = sum(samples) / len(samples)
+
+        assert mean_budget == pytest.approx(1200, rel=0.05)
+        assert mean_budget > 1000
+
+    def test_event_generator_hour_factor_defaults_to_model_t0(
+        self, event_dictionary, base_config
+    ):
+        """Wrapper без аргумента берёт модельную точку, а не настенный час."""
+        config = replace(
+            base_config,
+            model_t0=datetime(2026, 1, 1, 6, 30, tzinfo=timezone.utc),
+            model_timezone="Europe/Moscow",
+        )
+        generator = EventGenerator(event_dictionary, config)
+
+        assert generator._hour_factor() == 1.2
 
     def test_calculate_events_respects_bounds(self, event_dictionary, base_config):
         """Расчет количества событий уважает границы."""
@@ -1084,10 +1151,21 @@ class TestPoissonDistribution:
         assert all(s >= base_config.min_events_per_tick for s in samples)
         assert all(s <= base_config.max_events_per_tick for s in samples)
 
-    def test_jitter_increases_variance(self, event_dictionary, base_config, config_no_jitter):
+    def test_jitter_increases_variance(self, event_dictionary, base_config):
         """Jitter увеличивает дисперсию."""
-        gen_with = EventGenerator(event_dictionary, base_config)
-        gen_without = EventGenerator(event_dictionary, config_no_jitter)
+        config_with_jitter = replace(
+            base_config,
+            tick_seconds=60,
+            lambda_base_per_min=30,
+            jitter_pct=50,
+            min_events_per_tick=1,
+            max_events_per_tick=100,
+            model_t0=datetime(2026, 1, 1, 7, 0, tzinfo=timezone.utc),
+            model_timezone="UTC",
+        )
+        config_without_jitter = replace(config_with_jitter, jitter_pct=0)
+        gen_with = EventGenerator(event_dictionary, config_with_jitter)
+        gen_without = EventGenerator(event_dictionary, config_without_jitter)
 
         samples_with = [gen_with._calculate_events_count() for _ in range(200)]
         samples_without = [gen_without._calculate_events_count() for _ in range(200)]

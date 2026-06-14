@@ -92,8 +92,10 @@ GEN_LAMBDA_BASE_PER_MIN=60 GEN_POPULATION_MAX=500 docker compose up -d generator
 
 В живом режиме `event_timestamp` берётся из модельного времени: первый чистый
 тик стартует от `GEN_MODEL_T0`, дальше модельная точка сдвигается на
-`GEN_TICK_SECONDS * GEN_MODEL_TIME_SPEED`. Дневной коэффициент считается по
-`GEN_MODEL_TIMEZONE`, а не по реальному часу запуска процесса.
+`GEN_TICK_SECONDS * GEN_MODEL_TIME_SPEED`. Событийный бюджет тика считается по
+этой же модельной длительности, поэтому ×K даёт больше событий за короткий
+реальный прогон. Дневной коэффициент считается по `GEN_MODEL_TIMEZONE`, а не по
+реальному часу запуска процесса.
 
 Контейнерные значения `KAFKA_BOOTSTRAP_SERVERS` и `GEN_DATA_DIR` в compose
 оставлены безопасными внутренними значениями `kafka:29092` и `/data`.

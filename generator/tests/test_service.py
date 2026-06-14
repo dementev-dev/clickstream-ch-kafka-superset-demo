@@ -135,6 +135,11 @@ class TestGeneratorServiceSteadyStream:
         )
 
         assert len(night_wall_run["browser_events"]) == len(day_wall_run["browser_events"])
+        assert night_wall_run["budget_model_times"] == [
+            datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 10, 1, tzinfo=timezone.utc),
+        ]
+        assert day_wall_run["budget_model_times"] == night_wall_run["budget_model_times"]
         assert night_wall_run["browser_events"]
         timestamps = {
             event["event_timestamp"]
@@ -143,6 +148,38 @@ class TestGeneratorServiceSteadyStream:
         assert timestamps == {
             "2026-01-01 10:00:00.000000",
             "2026-01-01 10:01:00.000000",
+        }
+
+    def test_service_live_tick_advances_event_timestamps_by_model_speed(self, base_config):
+        """При ×K сервис сдвигает события на ускоренный модельный шаг."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            lambda_base_per_min=600,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=1000,
+            max_session_events=1,
+            max_active_sessions=250,
+            population_max=251,
+            model_t0=model_t0,
+            model_time_speed=10,
+        )
+
+        published = self._run_service_ticks(
+            config,
+            wall_now=datetime(2026, 6, 14, 11, 0, tzinfo=timezone.utc),
+            ticks_count=2,
+        )
+
+        timestamps = {
+            event["event_timestamp"]
+            for event in published["browser_events"]
+        }
+        assert timestamps == {
+            "2026-01-01 10:00:00.000000",
+            "2026-01-01 10:10:00.000000",
         }
 
     def _run_service_ticks(self, config, wall_now: datetime, ticks_count: int):
@@ -154,6 +191,8 @@ class TestGeneratorServiceSteadyStream:
         service.history = MagicMock()
         service._running = True
         sleep_calls = 0
+        budget_model_times = []
+        original_calculate_events_count = service.generator._calculate_events_count
 
         class FrozenDateTime(datetime):
             @classmethod
@@ -168,7 +207,16 @@ class TestGeneratorServiceSteadyStream:
             if sleep_calls >= ticks_count:
                 service._running = False
 
-        with patch("clickstream_generator.intensity.datetime", FrozenDateTime), \
+        def calculate_events_count(now=None):
+            budget_model_times.append(now)
+            return original_calculate_events_count(now=now)
+
+        with patch("clickstream_generator.service.datetime", FrozenDateTime), \
+             patch.object(
+                 service.generator,
+                 "_calculate_events_count",
+                 side_effect=calculate_events_count,
+             ), \
              patch("clickstream_generator.service.time.sleep", side_effect=stop_after_tick):
             service._main_loop()
 
@@ -176,6 +224,7 @@ class TestGeneratorServiceSteadyStream:
         for call in service.publisher.publish.call_args_list:
             topic, events = call.args
             published.setdefault(topic, []).extend(events)
+        published["budget_model_times"] = budget_model_times
         return published
 
     def test_service_ticks_publish_connected_multi_event_visit(self, base_config):

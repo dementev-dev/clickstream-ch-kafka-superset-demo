@@ -129,7 +129,7 @@ class EventGenerator:
 
     def _hour_factor(self, now: datetime | None = None) -> float:
         """Совместимый wrapper над расчётом часового коэффициента."""
-        return hour_factor(now, self.config.model_timezone)
+        return hour_factor(now or self.config.model_t0, self.config.model_timezone)
 
     def _calculate_events_count(self, now: datetime | None = None) -> int:
         """Совместимый wrapper над расчётом событийного бюджета."""
