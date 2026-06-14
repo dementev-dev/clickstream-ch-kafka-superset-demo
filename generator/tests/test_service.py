@@ -4,6 +4,8 @@
 
 import logging
 import random
+import hashlib
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from time import sleep as real_sleep
@@ -301,6 +303,463 @@ class TestGeneratorServiceSteadyStream:
         assert sum(record.sent_geo for record in history_records) == len(geo_events)
 
 
+class TestGeneratorServiceBackfill:
+    """Проверки режима промотки стартовой истории."""
+
+    def test_backfill_publishes_half_open_history_state_and_manifest(
+        self, base_config
+    ):
+        """Backfill пишет [T0, T_end), state на T_end и повторяемый manifest."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        model_t_end = model_t0 + timedelta(minutes=3)
+        config = replace(
+            base_config,
+            run_mode="backfill",
+            model_t0=model_t0,
+            model_t_end=model_t_end,
+            tick_seconds=60,
+            lambda_base_per_min=600,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=1000,
+            max_session_events=5,
+            max_active_sessions=250,
+            population_max=251,
+            state_enabled=True,
+        )
+
+        first = self._run_backfill(config)
+        second = self._run_backfill(config)
+
+        browser_events = first["published"]["browser_events"]
+        timestamps = [
+            datetime.fromisoformat(event["event_timestamp"].replace(" ", "T"))
+            for event in browser_events
+        ]
+        saved_state = first["state_manager"].save.call_args.args[0]
+        manifest = first["manifest_manager"].save.call_args.args[0]
+
+        assert browser_events
+        assert min(timestamps) >= model_t0.replace(tzinfo=None)
+        assert max(timestamps) < model_t_end.replace(tzinfo=None)
+        assert saved_state.model_timestamp == model_t_end
+        assert saved_state.last_timestamp == model_t_end
+        assert manifest["run_mode"] == "backfill"
+        assert manifest["model_t0"] == model_t0.isoformat()
+        assert manifest["model_t_end"] == model_t_end.isoformat()
+        assert manifest["state"]["last_batch_id"] == saved_state.last_batch_id
+        assert manifest["topics"]["browser_events"]["rows"] == len(browser_events)
+        for topic in (
+            "browser_events",
+            "location_events",
+            "device_events",
+            "geo_events",
+        ):
+            assert manifest["topics"][topic]["min_event_timestamp"] is not None
+            assert manifest["topics"][topic]["max_event_timestamp"] is not None
+        assert manifest["totals"]["events"] == len(browser_events)
+        assert manifest["totals"]["visits"] == len({
+            event["click_id"]
+            for event in browser_events
+        })
+        assert manifest["totals"]["users"] == len({
+            event["user_domain_id"]
+            for event in first["published"]["device_events"]
+        })
+        assert first["digest"] == second["digest"]
+        assert first["manifest_digest"] == second["manifest_digest"]
+
+    def test_live_start_uses_startup_manifest_without_wall_delta(
+        self, base_config, event_dictionary
+    ):
+        """Live-запуск из backfill-state стартует с T_end без wall-дельты."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        model_t_end = model_t0 + timedelta(minutes=5)
+        config = replace(
+            base_config,
+            model_t0=model_t0,
+            tick_seconds=60,
+            model_time_speed=3600,
+        )
+        source_generator = EventGenerator(event_dictionary, config)
+        source_stream = TickStreamGenerator(source_generator)
+        source_stream.generate_tick(event_budget=10, tick_started_at=model_t0)
+        state = source_stream.to_state(
+            tick=5,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="startup-history-state",
+            last_timestamp=model_t_end,
+            model_timestamp=model_t_end,
+            wall_timestamp=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+            model_time_speed=config.model_time_speed,
+            model_timezone=config.model_timezone,
+            model_t0=config.model_t0,
+            gen_seed=config.seed,
+        )
+        manifest = {
+            "run_mode": "backfill",
+            "gen_seed": config.seed,
+            "model_t0": model_t0.isoformat(),
+            "model_t_end": model_t_end.isoformat(),
+            "model_timezone": config.model_timezone,
+            "generation_settings": GeneratorService(config)._generation_settings(),
+            "state": {"last_batch_id": state.last_batch_id},
+        }
+        state_manager = MagicMock()
+        state_manager.load.return_value = state
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = manifest
+
+        with patch("clickstream_generator.service.start_http_server"), \
+             patch("clickstream_generator.service.ensure_topics"), \
+             patch("clickstream_generator.service.KafkaPublisher"), \
+             patch("clickstream_generator.service.KafkaBatchHistory"), \
+             patch(
+                 "clickstream_generator.service.KafkaStateManager",
+                 return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
+             ), \
+             patch.object(GeneratorService, "_main_loop", return_value=None):
+
+            service = GeneratorService(config)
+            service.start()
+
+        assert service._model_time == model_t_end
+        assert service._tick == state.tick
+
+    def test_live_start_rejects_startup_manifest_with_different_config_t_end(
+        self, base_config, event_dictionary
+    ):
+        """Manifest от другого T_end не считается стартовой историей запуска."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        manifest_t_end = model_t0 + timedelta(minutes=5)
+        config_t_end = model_t0 + timedelta(minutes=10)
+        wall_saved_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        wall_restarted_at = wall_saved_at + timedelta(seconds=30)
+        config = replace(
+            base_config,
+            model_t0=model_t0,
+            model_t_end=config_t_end,
+            tick_seconds=60,
+            model_time_speed=10,
+        )
+        source_generator = EventGenerator(event_dictionary, config)
+        source_stream = TickStreamGenerator(source_generator)
+        source_stream.generate_tick(event_budget=10, tick_started_at=model_t0)
+        state = source_stream.to_state(
+            tick=5,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="startup-history-state",
+            last_timestamp=manifest_t_end,
+            model_timestamp=manifest_t_end,
+            wall_timestamp=wall_saved_at,
+            model_time_speed=config.model_time_speed,
+            model_timezone=config.model_timezone,
+            model_t0=config.model_t0,
+            gen_seed=config.seed,
+        )
+        manifest = {
+            "run_mode": "backfill",
+            "gen_seed": config.seed,
+            "model_t0": model_t0.isoformat(),
+            "model_t_end": manifest_t_end.isoformat(),
+            "model_timezone": config.model_timezone,
+            "generation_settings": GeneratorService(config)._generation_settings(),
+            "state": {"last_batch_id": state.last_batch_id},
+        }
+        state_manager = MagicMock()
+        state_manager.load.return_value = state
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = manifest
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return wall_restarted_at.replace(tzinfo=None)
+                return wall_restarted_at.astimezone(tz)
+
+        with patch("clickstream_generator.service.start_http_server"), \
+             patch("clickstream_generator.service.ensure_topics"), \
+             patch("clickstream_generator.service.KafkaPublisher"), \
+             patch("clickstream_generator.service.KafkaBatchHistory"), \
+             patch(
+                 "clickstream_generator.service.KafkaStateManager",
+                 return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
+             ), \
+             patch("clickstream_generator.service.datetime", FrozenDateTime), \
+             patch.object(
+                 GeneratorService,
+                 "restore_from_startup_history",
+             ) as restore_from_startup_history, \
+             patch.object(
+                 GeneratorService,
+                 "_restore_live_state",
+             ) as restore_live_state, \
+             patch.object(GeneratorService, "_main_loop", return_value=None):
+
+            service = GeneratorService(config)
+            service.start()
+
+        restore_from_startup_history.assert_not_called()
+        restore_live_state.assert_not_called()
+        assert service._tick == 0
+        assert service._model_time == config.model_t0
+
+    def test_live_start_rejects_orphan_startup_state_without_live_restore(
+        self, base_config, event_dictionary, caplog
+    ):
+        """Orphan startup-history state не восстанавливается как live-state."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        model_t_end = model_t0 + timedelta(minutes=5)
+        config = replace(base_config, model_t0=model_t0, model_time_speed=10)
+        source_generator = EventGenerator(event_dictionary, config)
+        source_stream = TickStreamGenerator(source_generator)
+        source_stream.generate_tick(event_budget=10, tick_started_at=model_t0)
+        state = source_stream.to_state(
+            tick=5,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="startup-history-orphan",
+            last_timestamp=model_t_end,
+            model_timestamp=model_t_end,
+            wall_timestamp=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+            model_time_speed=config.model_time_speed,
+            model_timezone=config.model_timezone,
+            model_t0=config.model_t0,
+            gen_seed=config.seed,
+        )
+        state_manager = MagicMock()
+        state_manager.load.return_value = state
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = None
+
+        with patch("clickstream_generator.service.start_http_server"), \
+             patch("clickstream_generator.service.ensure_topics"), \
+             patch("clickstream_generator.service.KafkaPublisher"), \
+             patch("clickstream_generator.service.KafkaBatchHistory"), \
+             patch(
+                 "clickstream_generator.service.KafkaStateManager",
+                 return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
+             ), \
+             patch.object(
+                 GeneratorService,
+                 "restore_from_startup_history",
+             ) as restore_from_startup_history, \
+             patch.object(
+                 GeneratorService,
+                 "_restore_live_state",
+             ) as restore_live_state, \
+             patch.object(GeneratorService, "_main_loop", return_value=None), \
+             caplog.at_level(logging.WARNING, logger="generator"):
+
+            service = GeneratorService(config)
+            service.start()
+
+        restore_from_startup_history.assert_not_called()
+        restore_live_state.assert_not_called()
+        assert service._tick == 0
+        assert service._model_time == model_t0
+        assert "startup-history state without matching manifest" in caplog.text
+
+    def test_startup_history_state_checks_state_fields(
+        self, base_config, event_dictionary
+    ):
+        """Startup-history state сверяется с manifest/config по полям state."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        model_t_end = model_t0 + timedelta(minutes=5)
+        config = replace(base_config, model_t0=model_t0, model_time_speed=10)
+        source_generator = EventGenerator(event_dictionary, config)
+        source_stream = TickStreamGenerator(source_generator)
+        source_stream.generate_tick(event_budget=10, tick_started_at=model_t0)
+        state = source_stream.to_state(
+            tick=5,
+            rng_state=source_generator.rng.getstate(),
+            last_batch_id="startup-history-state",
+            last_timestamp=model_t_end,
+            model_timestamp=model_t_end,
+            wall_timestamp=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+            model_time_speed=config.model_time_speed,
+            model_timezone=config.model_timezone,
+            model_t0=config.model_t0,
+            gen_seed=config.seed + 1,
+        )
+        manifest = {
+            "run_mode": "backfill",
+            "gen_seed": config.seed,
+            "model_t0": model_t0.isoformat(),
+            "model_t_end": model_t_end.isoformat(),
+            "model_timezone": config.model_timezone,
+            "generation_settings": GeneratorService(config)._generation_settings(),
+            "state": {"last_batch_id": state.last_batch_id},
+        }
+
+        service = GeneratorService(config)
+
+        assert not service._is_startup_history_state(state, manifest)
+
+    def test_backfill_publish_error_does_not_save_state_or_manifest(
+        self, base_config
+    ):
+        """Backfill не создаёт валидный артефакт при ошибке публикации."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        config = replace(
+            base_config,
+            run_mode="backfill",
+            model_t0=model_t0,
+            model_t_end=model_t0 + timedelta(minutes=1),
+            tick_seconds=60,
+            lambda_base_per_min=600,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=1000,
+            max_session_events=5,
+            max_active_sessions=250,
+            population_max=251,
+            state_enabled=True,
+        )
+        service = GeneratorService(config)
+        service.publisher = MagicMock()
+        service.publisher.publish.side_effect = (
+            lambda topic, events: (len(events), 1)
+            if topic == "location_events"
+            else (len(events), 0)
+        )
+        service.history = MagicMock()
+        service.state_manager = MagicMock()
+        service.manifest_manager = MagicMock()
+
+        with pytest.raises(RuntimeError, match="Backfill publish failed"):
+            service._run_backfill()
+
+        service.state_manager.save.assert_not_called()
+        service.state_manager.flush.assert_not_called()
+        service.manifest_manager.save.assert_not_called()
+        service.manifest_manager.flush.assert_not_called()
+
+    def test_backfill_manifest_save_error_does_not_save_state(self, base_config):
+        """Если manifest не записан, state стартовой истории не сохраняется."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        config = replace(
+            base_config,
+            run_mode="backfill",
+            model_t0=model_t0,
+            model_t_end=model_t0 + timedelta(minutes=1),
+            tick_seconds=60,
+            lambda_base_per_min=600,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=1000,
+            max_session_events=5,
+            max_active_sessions=250,
+            population_max=251,
+            state_enabled=True,
+        )
+        service = GeneratorService(config)
+        service.publisher = MagicMock()
+        service.publisher.publish.side_effect = (
+            lambda topic, events: (len(events), 0)
+        )
+        service.publisher.flush.return_value = None
+        service.history = MagicMock()
+        service.state_manager = MagicMock()
+        service.manifest_manager = MagicMock()
+        service.manifest_manager.save.side_effect = RuntimeError("manifest down")
+
+        with pytest.raises(RuntimeError, match="manifest down"):
+            service._run_backfill()
+
+        service.manifest_manager.save.assert_called_once()
+        service.state_manager.save.assert_not_called()
+        service.state_manager.flush.assert_not_called()
+
+    def test_backfill_manifest_flush_error_does_not_save_state(self, base_config):
+        """Если manifest не сброшен в Kafka, state стартовой истории не сохраняется."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        config = replace(
+            base_config,
+            run_mode="backfill",
+            model_t0=model_t0,
+            model_t_end=model_t0 + timedelta(minutes=1),
+            tick_seconds=60,
+            lambda_base_per_min=600,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=1000,
+            max_session_events=5,
+            max_active_sessions=250,
+            population_max=251,
+            state_enabled=True,
+        )
+        service = GeneratorService(config)
+        service.publisher = MagicMock()
+        service.publisher.publish.side_effect = (
+            lambda topic, events: (len(events), 0)
+        )
+        service.publisher.flush.return_value = None
+        service.history = MagicMock()
+        service.state_manager = MagicMock()
+        service.manifest_manager = MagicMock()
+        service.manifest_manager.flush.side_effect = RuntimeError("flush down")
+
+        with pytest.raises(RuntimeError, match="flush down"):
+            service._run_backfill()
+
+        service.manifest_manager.save.assert_called_once()
+        service.manifest_manager.flush.assert_called_once()
+        service.state_manager.save.assert_not_called()
+        service.state_manager.flush.assert_not_called()
+
+    def _run_backfill(self, config):
+        service = GeneratorService(config)
+        service.publisher = MagicMock()
+        service.publisher.publish.side_effect = (
+            lambda topic, events: (len(events), 0)
+        )
+        service.publisher.flush.return_value = None
+        service.history = MagicMock()
+        service.state_manager = MagicMock()
+        service.manifest_manager = MagicMock()
+
+        service._run_backfill()
+
+        published = {}
+        for call in service.publisher.publish.call_args_list:
+            topic, events = call.args
+            published.setdefault(topic, []).extend(events)
+
+        digest = hashlib.sha256(
+            json.dumps(published, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        manifest = service.manifest_manager.save.call_args.args[0]
+        stable_manifest = {
+            key: value
+            for key, value in manifest.items()
+            if key != "generated_at"
+        }
+        manifest_digest = hashlib.sha256(
+            json.dumps(stable_manifest, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+        return {
+            "published": published,
+            "state_manager": service.state_manager,
+            "manifest_manager": service.manifest_manager,
+            "digest": digest,
+            "manifest_digest": manifest_digest,
+        }
+
+
 class TestGeneratorServiceStateV2:
     """Тесты подключения state v2 к сервисному запуску."""
 
@@ -325,6 +784,8 @@ class TestGeneratorServiceStateV2:
 
         state_manager = MagicMock()
         state_manager.load.return_value = state
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = None
 
         with patch("clickstream_generator.service.start_http_server"), \
              patch("clickstream_generator.service.ensure_topics"), \
@@ -333,6 +794,10 @@ class TestGeneratorServiceStateV2:
              patch(
                  "clickstream_generator.service.KafkaStateManager",
                  return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
              ), \
              patch.object(GeneratorService, "_main_loop", return_value=None):
 
@@ -373,6 +838,8 @@ class TestGeneratorServiceStateV2:
         )
         state_manager = MagicMock()
         state_manager.load.return_value = state
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = None
 
         class FrozenDateTime(datetime):
             @classmethod
@@ -388,6 +855,10 @@ class TestGeneratorServiceStateV2:
              patch(
                  "clickstream_generator.service.KafkaStateManager",
                  return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
              ), \
              patch("clickstream_generator.service.datetime", FrozenDateTime), \
              patch.object(GeneratorService, "_main_loop", return_value=None):
@@ -480,6 +951,8 @@ class TestGeneratorServiceStateV2:
         )
         state_manager = MagicMock()
         state_manager.load.return_value = state
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = None
 
         with patch("clickstream_generator.service.start_http_server"), \
              patch("clickstream_generator.service.ensure_topics"), \
@@ -488,6 +961,10 @@ class TestGeneratorServiceStateV2:
              patch(
                  "clickstream_generator.service.KafkaStateManager",
                  return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
              ), \
              patch.object(GeneratorService, "_main_loop", return_value=None), \
              caplog.at_level(logging.WARNING, logger="generator"):
@@ -542,6 +1019,8 @@ class TestGeneratorServiceStateV2:
             ],
             active_visits=[],
         )
+        manifest_manager = MagicMock()
+        manifest_manager.load.return_value = None
 
         with patch("clickstream_generator.service.start_http_server"), \
              patch("clickstream_generator.service.ensure_topics"), \
@@ -550,6 +1029,10 @@ class TestGeneratorServiceStateV2:
              patch(
                  "clickstream_generator.service.KafkaStateManager",
                  return_value=state_manager,
+             ), \
+             patch(
+                 "clickstream_generator.service.KafkaStartupHistoryManifest",
+                 return_value=manifest_manager,
              ), \
              patch.object(GeneratorService, "_main_loop", return_value=None), \
              caplog.at_level(logging.WARNING, logger="generator"):

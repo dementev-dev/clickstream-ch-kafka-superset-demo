@@ -78,6 +78,11 @@ class Config:
             os.getenv("GEN_MODEL_T0", "2026-01-01T00:00:00+00:00")
         )
     )
+    model_t_end: datetime | None = field(
+        default_factory=lambda: _parse_optional_model_timestamp(
+            os.getenv("GEN_MODEL_T_END")
+        )
+    )
     model_timezone: str = field(
         default_factory=lambda: os.getenv("GEN_MODEL_TIMEZONE", "UTC")
     )
@@ -122,3 +127,21 @@ class Config:
             raise ValueError("GEN_MODEL_TIME_SPEED must be > 0")
         if self.run_mode not in {"live", "backfill"}:
             raise ValueError("GEN_RUN_MODE must be live or backfill")
+        if self.model_t_end is not None:
+            object.__setattr__(
+                self,
+                "model_t_end",
+                self.model_t_end.astimezone(timezone.utc),
+            )
+        if self.run_mode == "backfill":
+            if self.model_t_end is None:
+                raise ValueError("GEN_MODEL_T_END is required for backfill")
+            if self.model_t_end <= self.model_t0:
+                raise ValueError("GEN_MODEL_T_END must be after GEN_MODEL_T0")
+
+
+def _parse_optional_model_timestamp(value: str | None) -> datetime | None:
+    """Разбирает необязательную ISO-метку модельного времени."""
+    if not value:
+        return None
+    return _parse_model_timestamp(value)

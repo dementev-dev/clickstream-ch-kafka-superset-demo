@@ -394,6 +394,24 @@ class TickStreamGenerator:
 
         return tick_batch
 
+    def drain_until(
+        self,
+        cutoff_at: datetime,
+        include_boundary: bool = False,
+    ) -> dict[str, list[dict]]:
+        """Выпускает созревшие события без рождения новых визитов."""
+        cutoff_time = _normalize_tick_time(cutoff_at)
+        tick_batch = _empty_batch()
+
+        self._release_due_events(
+            cutoff_time,
+            tick_batch,
+            include_boundary=include_boundary,
+        )
+        self._drop_finished_visits()
+
+        return tick_batch
+
     def _birth_visits(self, event_budget: int, tick_time: datetime) -> None:
         if len(self.active_visits) >= self.generator.config.max_active_sessions:
             self._pending_visit_births = 0.0
@@ -436,9 +454,17 @@ class TickStreamGenerator:
         self,
         tick_time: datetime,
         tick_batch: dict[str, list[dict]],
+        include_boundary: bool = True,
     ) -> None:
         for visit in self.active_visits:
-            while not visit.is_finished and visit.timestamps[visit.next_index] <= tick_time:
+            while not visit.is_finished:
+                next_timestamp = visit.timestamps[visit.next_index]
+                if include_boundary:
+                    is_due = next_timestamp <= tick_time
+                else:
+                    is_due = next_timestamp < tick_time
+                if not is_due:
+                    break
                 event_index = visit.next_index
                 for topic in TOPICS:
                     tick_batch[topic].append(visit.batch[topic][event_index])

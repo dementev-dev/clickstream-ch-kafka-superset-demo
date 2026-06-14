@@ -181,6 +181,84 @@ class KafkaStateManager:
             return None
 
 
+class KafkaStartupHistoryManifest:
+    """Хранение манифеста стартовой истории в Kafka compact topic."""
+
+    MANIFEST_TOPIC = "generator_startup_history_manifest"
+    MANIFEST_KEY = "default"
+
+    def __init__(self, bootstrap_servers: str):
+        self.bootstrap_servers = bootstrap_servers
+        KafkaProducerCls, _ = _kafka_importer()()
+
+        logger.info(
+            f"Connecting to Kafka for startup history manifest at {self.bootstrap_servers}"
+        )
+        self.producer = KafkaProducerCls(
+            bootstrap_servers=self.bootstrap_servers,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            key_serializer=lambda k: k.encode("utf-8") if k else None,
+            retries=3,
+            retry_backoff_ms=1000,
+        )
+        logger.info("Connected to Kafka for startup history manifest successfully")
+
+    def save(self, manifest: dict) -> None:
+        """Сохраняет манифест стартовой истории."""
+        def _do_send():
+            self.producer.send(
+                self.MANIFEST_TOPIC,
+                key=self.MANIFEST_KEY,
+                value=manifest,
+            )
+
+        _retry(_do_send, max_retries=3, base_delay=0.5)
+
+    def flush(self) -> None:
+        """Сбрасывает буфер с retry."""
+        def _do_flush():
+            self.producer.flush()
+
+        _retry(_do_flush, max_retries=3, base_delay=0.5)
+
+    def close(self) -> None:
+        """Закрывает соединение."""
+        try:
+            self.producer.close()
+        except Exception as e:
+            logger.debug(f"Error closing manifest producer (ignored): {e}")
+
+    def load(self) -> dict | None:
+        """Загружает последний манифест стартовой истории."""
+        from kafka import KafkaConsumer
+
+        logger.info(f"Loading startup history manifest from topic {self.MANIFEST_TOPIC}")
+
+        def _do_load():
+            consumer = KafkaConsumer(
+                self.MANIFEST_TOPIC,
+                bootstrap_servers=self.bootstrap_servers,
+                auto_offset_reset="earliest",
+                enable_auto_commit=False,
+                consumer_timeout_ms=5000,
+                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            )
+
+            last_manifest = None
+            for message in consumer:
+                if message.key and message.key.decode("utf-8") == self.MANIFEST_KEY:
+                    last_manifest = message.value
+
+            consumer.close()
+            return last_manifest
+
+        try:
+            return _retry(_do_load, max_retries=3, base_delay=0.5)
+        except Exception as e:
+            logger.warning(f"Failed to load startup history manifest: {e}")
+            return None
+
+
 def ensure_topics(bootstrap_servers: str) -> None:
     """Создаёт служебные топики, если их ещё нет."""
     from kafka import KafkaAdminClient
@@ -205,8 +283,18 @@ def ensure_topics(bootstrap_servers: str) -> None:
                     "delete.retention.ms": "100",
                 },
             )
+            manifest_topic = NewTopic(
+                name=KafkaStartupHistoryManifest.MANIFEST_TOPIC,
+                num_partitions=1,
+                replication_factor=1,
+                topic_configs={
+                    "cleanup.policy": "compact",
+                    "min.cleanable.dirty.ratio": "0.1",
+                    "delete.retention.ms": "100",
+                },
+            )
 
-            for topic in [history_topic, state_topic]:
+            for topic in [history_topic, state_topic, manifest_topic]:
                 try:
                     admin_client.create_topics([topic])
                     logger.info(f"Created topic: {topic.name}")

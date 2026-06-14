@@ -73,6 +73,7 @@ generator-service -> Kafka topics -> (потребители отдельно)
 | `GEN_P_NEW_USER` | Вероятность отдать новый визит новому пользователю | `0.15` |
 | `GEN_MIN_RETURN_MINUTES` | Минимальная пауза перед возвратом пользователя | `30` |
 | `GEN_MODEL_T0` | Стартовая модельная точка, ISO 8601 с часовым поясом | `2026-01-01T00:00:00+00:00` |
+| `GEN_MODEL_T_END` | Правая граница стартовой истории для `backfill` | — |
 | `GEN_MODEL_TIMEZONE` | Часовой пояс модельных часов для дневного коэффициента | `UTC` |
 | `GEN_MODEL_TIME_SPEED` | Сколько модельных секунд проходит за одну настенную секунду | `1` |
 | `GEN_RUN_MODE` | Режим генератора | `live` |
@@ -96,6 +97,15 @@ GEN_LAMBDA_BASE_PER_MIN=60 GEN_POPULATION_MAX=500 docker compose up -d generator
 этой же модельной длительности, поэтому ×K даёт больше событий за короткий
 реальный прогон. Дневной коэффициент считается по `GEN_MODEL_TIMEZONE`, а не по
 реальному часу запуска процесса.
+
+В режиме `backfill` генератор без сна проходит от `GEN_MODEL_T0` до
+`GEN_MODEL_T_END`, публикует события только за `[T0, T_end)`, сохраняет state v2
+на `T_end` в `generator_state` и пишет manifest в compact-topic
+`generator_startup_history_manifest`. Live-запуск с теми же настройками
+использует этот manifest, чтобы продолжить ровно с `T_end` без настенной дельты.
+Для одноразового backfill-запуска через compose используйте `docker compose run
+--rm generator`, а не `docker compose up generator`: у штатного сервиса включён
+restart policy.
 
 Контейнерные значения `KAFKA_BOOTSTRAP_SERVERS` и `GEN_DATA_DIR` в compose
 оставлены безопасными внутренними значениями `kafka:29092` и `/data`.

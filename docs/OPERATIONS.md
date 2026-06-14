@@ -103,6 +103,7 @@ make generator-logs
 | `GEN_P_NEW_USER` | Доля визитов новых пользователей | `0.15` |
 | `GEN_MIN_RETURN_MINUTES` | Минимальная пауза перед возвратом пользователя | `30` |
 | `GEN_MODEL_T0` | Стартовая модельная точка, ISO 8601 с часовым поясом | `2026-01-01T00:00:00+00:00` |
+| `GEN_MODEL_T_END` | Правая граница стартовой истории для `backfill` | пусто |
 | `GEN_MODEL_TIMEZONE` | Часовой пояс модельных часов для дневного коэффициента | `UTC` |
 | `GEN_MODEL_TIME_SPEED` | Сколько модельных секунд проходит за одну настенную секунду | `1` |
 | `GEN_RUN_MODE` | Режим генератора | `live` |
@@ -118,6 +119,287 @@ GEN_STATE_RESET=true GEN_LAMBDA_BASE_PER_MIN=60 docker compose up -d generator
 
 Контейнерные `KAFKA_BOOTSTRAP_SERVERS` и `GEN_DATA_DIR` в compose оставлены
 внутренними значениями `kafka:29092` и `/data`.
+
+### Стартовая история через backfill
+
+`GEN_RUN_MODE=backfill` быстро проматывает модельное прошлое от `GEN_MODEL_T0`
+до `GEN_MODEL_T_END` без сна. В Kafka попадают события только за полуоткрытый
+отрезок `[T0, T_end)`. В compact-topic `generator_state` сохраняется state на
+`T_end`, а в `generator_startup_history_manifest` — manifest с настройками и
+контрольными числами. При live-запуске с теми же настройками генератор видит,
+что state совпадает с manifest, и стартует ровно с `T_end` без настенной дельты.
+
+Для чистого повтора проще всего пересоздать volumes. Это сбрасывает ClickHouse,
+Kafka-топики данных и compact-topic state.
+
+```bash
+make clean
+docker compose up -d clickhouse kafka
+make ddl
+
+GEN_RUN_MODE=backfill \
+GEN_STATE_RESET=true \
+GEN_SEED=4242 \
+GEN_MODEL_T0=2026-01-01T00:00:00+00:00 \
+GEN_MODEL_T_END=2026-01-02T00:00:00+00:00 \
+GEN_MODEL_TIMEZONE=UTC \
+GEN_MODEL_TIME_SPEED=1 \
+GEN_TICK_SECONDS=60 \
+GEN_LAMBDA_BASE_PER_MIN=60 \
+GEN_JITTER_PCT=0 \
+docker compose run --rm --no-deps generator
+
+# Materialized View слоя STG читает Kafka сама; даём ей коротко догнать.
+sleep 10
+bash scripts/run_batch.sh
+```
+
+Manifest можно посмотреть так:
+
+```bash
+docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic generator_startup_history_manifest \
+  --from-beginning \
+  --property print.key=true \
+  --timeout-ms 5000
+```
+
+Live-продолжение стартует с этого state. Используйте те же `GEN_SEED`, `T0`,
+`T_end`, часовой пояс и настройки генерации. `GEN_STATE_RESET=false` важен: иначе
+слепок стартовой истории будет проигнорирован.
+
+```bash
+docker compose run -d --name startup-history-live --no-deps \
+  -e GEN_RUN_MODE=live \
+  -e GEN_STATE_RESET=false \
+  -e GEN_SEED=4242 \
+  -e GEN_MODEL_T0=2026-01-01T00:00:00+00:00 \
+  -e GEN_MODEL_T_END=2026-01-02T00:00:00+00:00 \
+  -e GEN_MODEL_TIMEZONE=UTC \
+  -e GEN_MODEL_TIME_SPEED=1 \
+  -e GEN_TICK_SECONDS=60 \
+  -e GEN_LAMBDA_BASE_PER_MIN=60 \
+  -e GEN_JITTER_PCT=0 \
+  generator
+
+sleep 130
+docker stop startup-history-live
+docker rm startup-history-live
+sleep 10
+bash scripts/run_batch.sh
+```
+
+Базовая сверка формы данных после backfill:
+
+```sql
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end
+SELECT
+    uniqExact(user_domain_id) AS users,
+    uniqExact(click_id) AS visits,
+    count() AS events,
+    users < visits AND visits < events AS pyramid_ok,
+    min(event_ts) AS min_event_ts,
+    max(event_ts) AS max_event_ts,
+    min_event_ts >= t0 AND max_event_ts < t_end AS half_open_ok
+FROM dm.v_events_enriched
+WHERE event_ts >= t0 AND event_ts < t_end;
+```
+
+Повторяемость чистого прогона удобно сверять коротким digest по ключевым полям
+ClickHouse. Запускайте запрос после `bash scripts/run_batch.sh`; при одинаковых
+`GEN_SEED`, `T0`, `T_end` и настройках значение должно повторяться.
+
+```bash
+docker compose exec -T clickhouse clickhouse-client \
+  --user=default \
+  --password=123456 \
+  --query "
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end
+SELECT hex(sipHash128(groupArray(tuple(
+    event_id,
+    click_id,
+    user_domain_id,
+    event_ts,
+    page_url_path
+)))) AS digest
+FROM (
+    SELECT
+        event_id,
+        click_id,
+        user_domain_id,
+        event_ts,
+        page_url_path
+    FROM dm.v_events_enriched
+    WHERE event_ts >= t0 AND event_ts < t_end
+    ORDER BY event_id
+  )"
+```
+
+Возвраты пользователей:
+
+```sql
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    users AS (
+        SELECT user_domain_id, uniqExact(click_id) AS visits
+        FROM dm.v_events_enriched
+        WHERE event_ts >= t0 AND event_ts < t_end
+          AND user_domain_id IS NOT NULL
+        GROUP BY user_domain_id
+    )
+SELECT
+    count() AS users,
+    countIf(visits > 1) AS returning_users,
+    returning_users / users AS returning_share
+FROM users;
+```
+
+Форма длины визита: проверяем не только среднее, а долю коротких визитов,
+медиану и долю визитов, срезанных потолком `GEN_MAX_SESSION_EVENTS`.
+
+```sql
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    30 AS max_session_events,
+    sessions AS (
+        SELECT
+            click_id,
+            count() AS events_count,
+            dateDiff('second', min(event_ts), max(event_ts)) AS duration_sec
+        FROM dm.v_events_enriched
+        WHERE event_ts >= t0 AND event_ts < t_end
+        GROUP BY click_id
+    )
+SELECT
+    count() AS visits,
+    countIf(events_count <= 2) / visits AS short_visit_share,
+    quantileExact(0.5)(events_count) AS median_events_per_visit,
+    avg(events_count) AS avg_events_per_visit,
+    countIf(events_count = max_session_events) / visits AS capped_visit_share,
+    quantileExact(0.5)(duration_sec) AS median_duration_sec
+FROM sessions;
+```
+
+Воронка должна монотонно убывать, а доля дошедших до `/confirmation` должна быть
+в согласованном коридоре для текущих настроек генератора. Для review gate
+`confirmation_share` сравнивается по калибровочной форме «страница была в
+визите». Строгий SQL ниже проверяет отдельное свойство: упорядоченный путь
+`/home -> товары -> /cart -> /payment -> /confirmation`.
+
+```sql
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    sessions AS (
+        SELECT
+            click_id,
+            minIf(event_ts, page_url_path = '/home') AS home_ts,
+            minIf(event_ts, page_url_path IN ('/product_a', '/product_b')) AS product_ts,
+            minIf(event_ts, page_url_path = '/cart') AS cart_ts,
+            minIf(event_ts, page_url_path = '/payment') AS payment_ts,
+            minIf(event_ts, page_url_path = '/confirmation') AS confirmation_ts
+        FROM dm.v_events_enriched
+        WHERE event_ts >= t0 AND event_ts < t_end
+        GROUP BY click_id
+    )
+SELECT
+    countIf(home_ts IS NOT NULL) AS home,
+    countIf(home_ts IS NOT NULL AND product_ts > home_ts) AS products,
+    countIf(home_ts IS NOT NULL AND product_ts > home_ts AND cart_ts > product_ts) AS cart,
+    countIf(home_ts IS NOT NULL AND product_ts > home_ts AND cart_ts > product_ts AND payment_ts > cart_ts) AS payment,
+    countIf(home_ts IS NOT NULL AND product_ts > home_ts AND cart_ts > product_ts AND payment_ts > cart_ts AND confirmation_ts > payment_ts) AS confirmation,
+    products <= home AND cart <= products AND payment <= cart AND confirmation <= payment AS monotonic_ok,
+    confirmation / home AS confirmation_share
+FROM sessions;
+```
+
+Калибровочная форма воронки проверяет, что страница была в визите, без строгого
+порядка событий. Именно эту форму используем для сравнения `confirmation_share`
+в review gate.
+
+```sql
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    sessions AS (
+        SELECT
+            click_id,
+            countIf(page_url_path = '/home') > 0 AS has_home,
+            countIf(page_url_path IN ('/product_a', '/product_b')) > 0 AS has_product,
+            countIf(page_url_path = '/cart') > 0 AS has_cart,
+            countIf(page_url_path = '/payment') > 0 AS has_payment,
+            countIf(page_url_path = '/confirmation') > 0 AS has_confirmation
+        FROM dm.v_events_enriched
+        WHERE event_ts >= t0 AND event_ts < t_end
+        GROUP BY click_id
+    )
+SELECT
+    countIf(has_home) AS home,
+    countIf(has_home AND has_product) AS products,
+    countIf(has_home AND has_product AND has_cart) AS cart,
+    countIf(has_home AND has_product AND has_cart AND has_payment) AS payment,
+    countIf(has_home AND has_product AND has_cart AND has_payment AND has_confirmation) AS confirmation,
+    products <= home AND cart <= products AND payment <= cart AND confirmation <= payment AS monotonic_ok,
+    confirmation / home AS confirmation_share
+FROM sessions;
+```
+
+Стык backfill + live проверяется после короткого live-продолжения:
+
+```sql
+WITH
+    toDateTime64('2026-01-01 00:00:00', 6) AS t0,
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    toDateTime64('2026-01-02 00:10:00', 6) AS t_live_end
+SELECT
+    count() AS events,
+    uniqExact(event_id) AS unique_events,
+    events - unique_events AS duplicate_events,
+    countIf(event_ts = t_end) AS boundary_events,
+    min(event_ts) AS min_event_ts,
+    max(event_ts) AS max_event_ts
+FROM dm.v_events_enriched
+WHERE event_ts >= t0 AND event_ts < t_live_end;
+```
+
+Однородность визитов, переходящих через `T_end`:
+
+```sql
+WITH
+    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    crossing AS (
+        SELECT
+            click_id,
+            min(event_ts) AS first_ts,
+            max(event_ts) AS last_ts,
+            groupUniqArray(user_domain_id) AS users,
+            groupUniqArray(device_type) AS devices,
+            groupUniqArray(os_name) AS os_names,
+            groupUniqArray(geo_country) AS countries
+        FROM dm.v_events_enriched
+        WHERE event_ts >= t_end - INTERVAL 30 MINUTE
+          AND event_ts < t_end + INTERVAL 30 MINUTE
+        GROUP BY click_id
+        HAVING first_ts < t_end AND last_ts >= t_end
+    )
+SELECT
+    count() AS crossing_visits,
+    countIf(
+        length(users) = 1
+        AND length(devices) = 1
+        AND length(os_names) = 1
+        AND length(countries) = 1
+    ) AS homogeneous_visits,
+    crossing_visits = homogeneous_visits AS context_ok
+FROM crossing;
+```
 
 ### Проверка модельного времени в ClickHouse
 
