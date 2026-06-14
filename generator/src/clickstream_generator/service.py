@@ -4,7 +4,7 @@ import logging
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from prometheus_client import start_http_server
 
@@ -42,6 +42,7 @@ class GeneratorService:
         self.state_manager: KafkaStateManager | None = None
         self._running = False
         self._tick = 0
+        self._model_time = config.model_t0
 
     def start(self):
         """Запускает основной цикл."""
@@ -139,16 +140,22 @@ class GeneratorService:
             self._tick += 1
             tick_start = time.time()
             batch_id = str(uuid.uuid4())[:8]
+            model_time = self._model_time
 
             with METRICS_TICK_DURATION.time():
                 logger.info(f"=== Tick {self._tick} (batch_id={batch_id}) ===")
 
                 try:
-                    events_count = self.generator._calculate_events_count()
+                    events_count = self.generator._calculate_events_count(
+                        now=model_time,
+                    )
                     logger.info(f"Generating with event budget ~{events_count}")
 
                     gen_start = time.time()
-                    batch = self.stream.generate_tick(events_count)
+                    batch = self.stream.generate_tick(
+                        events_count,
+                        tick_started_at=model_time,
+                    )
                     gen_duration = time.time() - gen_start
 
                     pub_start = time.time()
@@ -173,6 +180,7 @@ class GeneratorService:
                     if status in ("success", "partial"):
                         METRICS_LAST_SUCCESS.set_to_current_time()
                         self._save_state(batch_id)
+                        self._advance_model_time()
 
                     self.publisher.flush()
                     pub_duration = time.time() - pub_start
@@ -234,6 +242,12 @@ class GeneratorService:
             if sleep_time > 0:
                 logger.debug(f"Sleeping for {sleep_time:.1f}s until next tick")
                 time.sleep(sleep_time)
+
+    def _advance_model_time(self) -> None:
+        """Сдвигает модельное время после успешного live-тика."""
+        self._model_time = self._model_time + timedelta(
+            seconds=self.config.tick_seconds * self.config.model_time_speed,
+        )
 
 
 def main():

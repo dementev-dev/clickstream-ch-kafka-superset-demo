@@ -107,6 +107,77 @@ class TestGeneratorServiceDisabled:
 class TestGeneratorServiceSteadyStream:
     """Проверки сервисного тика без настоящей Kafka."""
 
+    def test_service_live_tick_uses_model_time_for_events_and_day_factor(self, base_config):
+        """Живой тик пишет события от T0 и не зависит от реального часа запуска."""
+        model_t0 = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        config = replace(
+            base_config,
+            tick_seconds=60,
+            lambda_base_per_min=600,
+            jitter_pct=0,
+            min_events_per_tick=1,
+            max_events_per_tick=1000,
+            max_session_events=1,
+            max_active_sessions=250,
+            population_max=251,
+            model_t0=model_t0,
+        )
+
+        night_wall_run = self._run_service_ticks(
+            config,
+            wall_now=datetime(2026, 6, 14, 3, 0, tzinfo=timezone.utc),
+            ticks_count=2,
+        )
+        day_wall_run = self._run_service_ticks(
+            config,
+            wall_now=datetime(2026, 6, 14, 11, 0, tzinfo=timezone.utc),
+            ticks_count=2,
+        )
+
+        assert len(night_wall_run["browser_events"]) == len(day_wall_run["browser_events"])
+        assert night_wall_run["browser_events"]
+        timestamps = {
+            event["event_timestamp"]
+            for event in night_wall_run["browser_events"]
+        }
+        assert timestamps == {
+            "2026-01-01 10:00:00.000000",
+            "2026-01-01 10:01:00.000000",
+        }
+
+    def _run_service_ticks(self, config, wall_now: datetime, ticks_count: int):
+        service = GeneratorService(config)
+        service.publisher = MagicMock()
+        service.publisher.publish.side_effect = (
+            lambda topic, events: (len(events), 0)
+        )
+        service.history = MagicMock()
+        service._running = True
+        sleep_calls = 0
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return wall_now.replace(tzinfo=None)
+                return wall_now.astimezone(tz)
+
+        def stop_after_tick(_sleep_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= ticks_count:
+                service._running = False
+
+        with patch("clickstream_generator.intensity.datetime", FrozenDateTime), \
+             patch("clickstream_generator.service.time.sleep", side_effect=stop_after_tick):
+            service._main_loop()
+
+        published = {}
+        for call in service.publisher.publish.call_args_list:
+            topic, events = call.args
+            published.setdefault(topic, []).extend(events)
+        return published
+
     def test_service_ticks_publish_connected_multi_event_visit(self, base_config):
         """Сервисные тики публикуют несколько связанных событий одного визита."""
         config = replace(base_config, tick_seconds=1, max_session_events=3)

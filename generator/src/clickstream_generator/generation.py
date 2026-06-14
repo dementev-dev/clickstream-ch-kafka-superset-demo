@@ -127,13 +127,13 @@ class EventGenerator:
         pause = self.rng.lognormvariate(math.log(20.0), 0.9)
         return max(1.0, min(pause, 29 * 60.0))
 
-    def _hour_factor(self) -> float:
+    def _hour_factor(self, now: datetime | None = None) -> float:
         """Совместимый wrapper над расчётом часового коэффициента."""
-        return hour_factor()
+        return hour_factor(now, self.config.model_timezone)
 
-    def _calculate_events_count(self) -> int:
+    def _calculate_events_count(self, now: datetime | None = None) -> int:
         """Совместимый wrapper над расчётом событийного бюджета."""
-        return calculate_events_count(self.config, self.rng)
+        return calculate_events_count(self.config, self.rng, now=now)
 
     def generate_batch(
         self,

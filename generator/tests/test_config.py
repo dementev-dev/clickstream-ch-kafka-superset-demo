@@ -3,6 +3,7 @@
 """
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from generator import Config
@@ -59,6 +60,24 @@ class TestConfigValidation:
         assert base_config.lambda_base_per_min == 30
         assert base_config.jitter_pct == 20
         assert base_config.max_active_sessions < base_config.population_max
+
+    def test_model_t0_is_normalized_to_utc(self, base_config):
+        """model_t0 нормализуется к UTC даже при прямом создании Config."""
+        from dataclasses import replace
+
+        config = replace(
+            base_config,
+            model_t0=datetime(
+                2026,
+                1,
+                1,
+                13,
+                0,
+                tzinfo=timezone(timedelta(hours=3)),
+            ),
+        )
+
+        assert config.model_t0 == datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 
 
 class TestConfigDefaults:

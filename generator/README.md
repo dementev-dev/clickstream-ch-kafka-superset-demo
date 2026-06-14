@@ -72,6 +72,10 @@ generator-service -> Kafka topics -> (потребители отдельно)
 | `GEN_POPULATION_MAX` | Потолок активной популяции пользователей | `300` |
 | `GEN_P_NEW_USER` | Вероятность отдать новый визит новому пользователю | `0.15` |
 | `GEN_MIN_RETURN_MINUTES` | Минимальная пауза перед возвратом пользователя | `30` |
+| `GEN_MODEL_T0` | Стартовая модельная точка, ISO 8601 с часовым поясом | `2026-01-01T00:00:00+00:00` |
+| `GEN_MODEL_TIMEZONE` | Часовой пояс модельных часов для дневного коэффициента | `UTC` |
+| `GEN_MODEL_TIME_SPEED` | Сколько модельных секунд проходит за одну настенную секунду | `1` |
+| `GEN_RUN_MODE` | Режим генератора | `live` |
 | `GEN_DATA_DIR` | Путь к JSONL файлам | `/data` |
 | `GEN_SEED` | Сид для воспроизводимости | — |
 | `GEN_ENABLED` | Включить генерацию | `true` |
@@ -85,6 +89,11 @@ generator-service -> Kafka topics -> (потребители отдельно)
 ```bash
 GEN_LAMBDA_BASE_PER_MIN=60 GEN_POPULATION_MAX=500 docker compose up -d generator
 ```
+
+В живом режиме `event_timestamp` берётся из модельного времени: первый чистый
+тик стартует от `GEN_MODEL_T0`, дальше модельная точка сдвигается на
+`GEN_TICK_SECONDS * GEN_MODEL_TIME_SPEED`. Дневной коэффициент считается по
+`GEN_MODEL_TIMEZONE`, а не по реальному часу запуска процесса.
 
 Контейнерные значения `KAFKA_BOOTSTRAP_SERVERS` и `GEN_DATA_DIR` в compose
 оставлены безопасными внутренними значениями `kafka:29092` и `/data`.

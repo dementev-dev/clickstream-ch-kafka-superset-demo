@@ -102,6 +102,10 @@ make generator-logs
 | `GEN_POPULATION_MAX` | Потолок активной популяции пользователей | `300` |
 | `GEN_P_NEW_USER` | Доля визитов новых пользователей | `0.15` |
 | `GEN_MIN_RETURN_MINUTES` | Минимальная пауза перед возвратом пользователя | `30` |
+| `GEN_MODEL_T0` | Стартовая модельная точка, ISO 8601 с часовым поясом | `2026-01-01T00:00:00+00:00` |
+| `GEN_MODEL_TIMEZONE` | Часовой пояс модельных часов для дневного коэффициента | `UTC` |
+| `GEN_MODEL_TIME_SPEED` | Сколько модельных секунд проходит за одну настенную секунду | `1` |
+| `GEN_RUN_MODE` | Режим генератора | `live` |
 | `GEN_STATE_ENABLED` | Сохранять state v2 между рестартами | `true` |
 | `GEN_STATE_RESET` | Сбросить state при старте | `false` |
 
@@ -114,6 +118,48 @@ GEN_STATE_RESET=true GEN_LAMBDA_BASE_PER_MIN=60 docker compose up -d generator
 
 Контейнерные `KAFKA_BOOTSTRAP_SERVERS` и `GEN_DATA_DIR` в compose оставлены
 внутренними значениями `kafka:29092` и `/data`.
+
+### Проверка модельного времени в ClickHouse
+
+Для повторяемой проверки используйте чистый стенд и явный сброс состояния
+генератора. `event_timestamp` в событиях — модельное время от `GEN_MODEL_T0`, а
+не настенное время запуска процесса.
+
+```bash
+make clean
+docker compose up -d clickhouse kafka
+make ddl
+
+GEN_SEED=4242 \
+GEN_MODEL_T0=2026-01-01T10:00:00+00:00 \
+GEN_MODEL_TIMEZONE=UTC \
+GEN_STATE_RESET=true \
+GEN_TICK_SECONDS=60 \
+GEN_LAMBDA_BASE_PER_MIN=60 \
+GEN_JITTER_PCT=0 \
+docker compose up -d --build generator
+
+# Убедитесь по логам, что Tick 1 завершился, а Tick 2 ещё не стартовал.
+sleep 9
+docker compose logs --tail=40 generator
+docker compose stop generator
+sleep 5
+bash scripts/run_batch.sh
+
+docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "
+SELECT
+    count() AS events,
+    min(event_ts) AS min_event_ts,
+    max(event_ts) AS max_event_ts,
+    uniqExact(event_id) AS unique_events,
+    uniqExact(click_id) AS unique_clicks
+FROM ods.browser_event
+FORMAT Vertical"
+```
+
+Повторите блок с теми же значениями. При чистом стенде и `GEN_STATE_RESET=true`
+контрольные числа должны совпасть, а `min_event_ts` должен начинаться от
+`2026-01-01 10:00:00`.
 
 ### Топик истории
 

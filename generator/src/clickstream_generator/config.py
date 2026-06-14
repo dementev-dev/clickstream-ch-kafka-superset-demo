@@ -2,7 +2,18 @@
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+def _parse_model_timestamp(value: str) -> datetime:
+    """Разбирает ISO-метку модельного времени и нормализует её к UTC."""
+    normalized = value.replace("Z", "+00:00")
+    timestamp = datetime.fromisoformat(normalized)
+    if timestamp.tzinfo is None:
+        raise ValueError("GEN_MODEL_T0 must include timezone")
+    return timestamp.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,20 @@ class Config:
     state_reset: bool = field(
         default_factory=lambda: os.getenv("GEN_STATE_RESET", "false").lower() == "true"
     )
+    model_t0: datetime = field(
+        default_factory=lambda: _parse_model_timestamp(
+            os.getenv("GEN_MODEL_T0", "2026-01-01T00:00:00+00:00")
+        )
+    )
+    model_timezone: str = field(
+        default_factory=lambda: os.getenv("GEN_MODEL_TIMEZONE", "UTC")
+    )
+    model_time_speed: float = field(
+        default_factory=lambda: float(os.getenv("GEN_MODEL_TIME_SPEED", "1"))
+    )
+    run_mode: str = field(
+        default_factory=lambda: os.getenv("GEN_RUN_MODE", "live")
+    )
 
     def __post_init__(self):
         if self.tick_seconds < 1:
@@ -82,3 +107,18 @@ class Config:
             raise ValueError("GEN_MAX_ACTIVE_SESSIONS must be < GEN_POPULATION_MAX")
         if not self.data_dir.exists():
             raise ValueError(f"Data directory does not exist: {self.data_dir}")
+        if self.model_t0.tzinfo is None:
+            raise ValueError("GEN_MODEL_T0 must include timezone")
+        object.__setattr__(
+            self,
+            "model_t0",
+            self.model_t0.astimezone(timezone.utc),
+        )
+        try:
+            ZoneInfo(self.model_timezone)
+        except ZoneInfoNotFoundError as e:
+            raise ValueError(f"Unknown GEN_MODEL_TIMEZONE: {self.model_timezone}") from e
+        if self.model_time_speed <= 0:
+            raise ValueError("GEN_MODEL_TIME_SPEED must be > 0")
+        if self.run_mode not in {"live", "backfill"}:
+            raise ValueError("GEN_RUN_MODE must be live or backfill")
