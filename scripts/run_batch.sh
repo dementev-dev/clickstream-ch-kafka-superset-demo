@@ -14,7 +14,7 @@
 #
 # Требования:
 #   - ClickHouse запущен (make up)
-#   - STG содержит данные (make data выполнен)
+#   - STG содержит данные генератора или ручной загрузки
 #
 # Стратегия:
 #   Сейчас: полная перезагрузка (TRUNCATE + INSERT) — для демо
@@ -81,7 +81,8 @@ STG_COUNT=$(${COMPOSE_BIN} exec -T "${CLICKHOUSE_SERVICE}" clickhouse-client \
 
 if [[ "${STG_COUNT}" == "0" ]]; then
     echo "Предупреждение: Таблицы STG пусты."
-    echo "Сначала загрузите данные: make data"
+    echo "Сначала загрузите данные: make generated-history-analytics"
+    echo "Для ручной отладки можно выполнить backfill генератора или архивный make data."
     exit 1
 fi
 

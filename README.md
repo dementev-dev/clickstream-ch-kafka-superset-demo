@@ -9,10 +9,13 @@
 витринами.
 
 Поток данных коротко:
-- **bootstrap**: `data/*.jsonl → Airflow (kafka_load) → Kafka → ClickHouse (слой STG) →
-  Airflow (etl_pipeline: STG → ODS → DDS → DM) → Superset`.
-- **steady-stream**: `generator-service → Kafka → ClickHouse (STG) → Airflow (etl_pipeline)
+- **стартовая история**: `generator backfill → Kafka → ClickHouse (STG) →
+  batch STG → ODS → DDS → DM → Superset`.
+- **живое продолжение**: `generator live → Kafka → ClickHouse (STG) → batch ETL
   → Superset`.
+
+Файлы `data/*.jsonl` больше не основной источник аналитики. Пока они остаются
+архивной кладовкой значений для генератора: браузеры, страны, устройства и UTM.
 
 ## Куда дальше
 
@@ -25,34 +28,26 @@
 
 ## Быстрый старт
 
-Стенд управляется через Airflow — это основной рабочий способ. Отдельные shell-скрипты в
-`scripts/` оставлены как запасной вариант для локальных прогонов (см.
-[OPERATIONS](./docs/OPERATIONS.md)).
+Штатный чистый запуск строит аналитику из стартовой истории генератора. Команда
+очищает volumes ClickHouse и Kafka, создаёт стартовую историю, доводит её до DM и
+проверяет Superset metadata.
 
 ```bash
-# 1. Поднять весь стек
-make up
-docker compose ps   # убедиться, что контейнеры запустились
+make generated-history-analytics
+docker compose ps
 ```
 
-Дальше — три шага в Airflow (веб-интерфейс `http://localhost:8080`, логин и пароль
-`admin`/`admin`). Сними каждый DAG с паузы (кнопка Unpause) и запусти по очереди:
-
-1. `ddl_init` — создаёт базы, таблицы и представления в ClickHouse.
-2. `kafka_load` — заливает события из `data/*.jsonl` в Kafka.
-3. `etl_pipeline` — прогоняет цепочку STG → ODS → DDS → DM.
-
-Те же шаги можно запускать из командной строки — это удобно для скриптов:
+По умолчанию это быстрый проверочный профиль на 6 часов модельного времени.
+Суточную историю можно прогнать отдельно:
 
 ```bash
-docker compose exec -T airflow-webserver airflow dags trigger ddl_init
+GEN_MODEL_T_END=2026-01-02T00:00:00+00:00 make generated-history-analytics
+```
 
-# Загрузить первые 100 строк каждого файла (limit=0 — загрузить всё)
-docker compose exec -T airflow-webserver airflow dags trigger kafka_load \
-  --conf '{"limit": 100, "reset_topics": true}'
+Повторить только техническую проверку после уже выполненного прогона:
 
-docker compose exec -T airflow-webserver airflow dags trigger etl_pipeline \
-  --conf '{"full_refresh": true}'
+```bash
+make generated-history-check
 ```
 
 Проверить, что данные дошли до витрин:
@@ -78,17 +73,16 @@ docker compose exec -T clickhouse clickhouse-client --user=default --password=12
 
 Готовый дашборд в Superset:
 `http://localhost:8088/superset/dashboard/ecommerce-analytics/` — он создаётся
-автоматически через минуту-две после `make up`. Состав и настройка дашборда описаны в
+во время `make generated-history-analytics`. Состав и настройка дашборда описаны в
 [SUPERSET_DASHBOARD](./docs/SUPERSET_DASHBOARD.md).
 
 ## Как устроен поток данных
 
 ```mermaid
 flowchart LR
-    subgraph AF["Airflow"]
-        D1["ddl_init"]
-        D2["kafka_load"]
-        D3["etl_pipeline"]
+    subgraph GEN["Generator"]
+        BF["backfill"]
+        LIVE["live"]
     end
 
     subgraph Kafka["Kafka"]
@@ -102,11 +96,12 @@ flowchart LR
         DM["DM: витрины VIEW"]
     end
 
-    D2 -->|загрузка JSONL| Kafka -->|Kafka MV| STG
+    BF -->|стартовая история| Kafka
+    LIVE -->|продолжение| Kafka
+    Kafka -->|Kafka MV| STG
     STG -->|batch| ODS -->|batch| DDS -->|VIEW| DM
 
-    D1 -.->|DDL| CH
-    D3 -.->|batch| ODS & DDS
+    DDL["DDL"] -.-> CH
 ```
 
 «Грязные» записи не роняют пайплайн: ошибки разбора складываются в `ods.*_errors` и в

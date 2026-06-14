@@ -9,8 +9,12 @@
 - `make up` (или `docker compose up -d`)
 - `make down` (остановить и удалить контейнеры/сети проекта)
 - `make clean` (полная очистка: `down -v --remove-orphans`)
+- `make generated-history-analytics` (штатный чистый прогон: стартовая история
+  генератора -> Kafka/STG -> ODS -> DDS -> DM -> Superset)
+- `make generated-history-check` (повторяемая проверка ClickHouse и Superset
+  после прогона стартовой истории)
 - `make ddl` (применяет SQL из `sql/ddl/00_databases.sql` и `sql/ddl/*/*.sql` в ClickHouse)
-- `make data` (пересоздаёт топики и заливает данные в Kafka; по умолчанию полный объём, срез — `LIMIT=50 make data`)
+- `make data` (архивный путь: заливает `data/*.jsonl` в Kafka; не основной источник аналитики)
 - `make transform` (запускает batch-процесс ODS -> DDS -> DM)
 - `make superset-init` (повторная инициализация Superset: подключение к ClickHouse, датасеты, дашборд)
 - `docker compose ps`
@@ -33,6 +37,10 @@
 
 ## Airflow DAGs
 
+Штатный аналитический путь больше не начинается с `kafka_load`: чистый стенд
+получает данные из стартовой истории генератора. DAG-и ниже остаются для
+ручных экспериментов, отладки и совместимости учебного стенда.
+
 ### `ddl_init`
 
 - Запуск: ручной (`Trigger DAG`)
@@ -41,6 +49,7 @@
 
 ### `kafka_load`
 
+- Архивный путь, не основной источник аналитики.
 - Запуск: ручной (`Trigger DAG with config`)
 - Параметры:
   - `limit` (`int`, default `0`) — количество строк (`0` = все)
@@ -62,6 +71,8 @@
   - `full_refresh` (`bool`, default `true`) — очистить DDS перед загрузкой
   - `wait_stg_timeout_sec` (`int`, default `600`, minimum `30`) — сколько секунд задача `wait_for_stg_data` ждёт появления данных в STG, прежде чем упасть по таймауту
 - Зависимость: требует наличия данных в STG (от `kafka_load` или `make data`)
+- В штатном сценарии STG наполняет `make generated-history-analytics` через
+  backfill генератора.
 - Гейт целостности DDS: `check_dds_integrity` считает события без клика, а
   `assert_dds_integrity` роняет DAG при `orphan_events > 0`. Проверка идёт после
   `load_dds` и до `load_dm_summary`, чтобы DM не собирался поверх нарушенной связи
@@ -122,6 +133,29 @@ GEN_STATE_RESET=true GEN_LAMBDA_BASE_PER_MIN=60 docker compose up -d generator
 
 ### Стартовая история через backfill
 
+Штатная команда чистого прогона:
+
+```bash
+make generated-history-analytics
+```
+
+Она выполняет полный сброс volumes, поднимает ClickHouse и Kafka, применяет DDL,
+запускает `GEN_RUN_MODE=backfill`, прогоняет batch STG -> ODS -> DDS -> DM,
+инициализирует Superset и запускает техническую проверку. Для координатора или CI
+короткая повторная проверка после уже готового стенда:
+
+```bash
+make generated-history-check
+```
+
+По умолчанию команда использует быстрый проверочный профиль: 6 часов модельного
+времени (`GEN_MODEL_T_END=2026-01-01T06:00:00+00:00`). Суточную историю можно
+прогнать отдельно, явно задав правую границу:
+
+```bash
+GEN_MODEL_T_END=2026-01-02T00:00:00+00:00 make generated-history-analytics
+```
+
 `GEN_RUN_MODE=backfill` быстро проматывает модельное прошлое от `GEN_MODEL_T0`
 до `GEN_MODEL_T_END` без сна. В Kafka попадают события только за полуоткрытый
 отрезок `[T0, T_end)`. В compact-topic `generator_state` сохраняется state на
@@ -129,8 +163,9 @@ GEN_STATE_RESET=true GEN_LAMBDA_BASE_PER_MIN=60 docker compose up -d generator
 контрольными числами. При live-запуске с теми же настройками генератор видит,
 что state совпадает с manifest, и стартует ровно с `T_end` без настенной дельты.
 
-Для чистого повтора проще всего пересоздать volumes. Это сбрасывает ClickHouse,
-Kafka-топики данных и compact-topic state.
+Для чистого повтора пересоздавайте volumes. Это сбрасывает ClickHouse,
+Kafka-топики данных, state и manifest генератора. `make generated-history-analytics`
+делает это по умолчанию (`CLEAN_START=1`).
 
 ```bash
 make clean
@@ -141,7 +176,7 @@ GEN_RUN_MODE=backfill \
 GEN_STATE_RESET=true \
 GEN_SEED=4242 \
 GEN_MODEL_T0=2026-01-01T00:00:00+00:00 \
-GEN_MODEL_T_END=2026-01-02T00:00:00+00:00 \
+GEN_MODEL_T_END=2026-01-01T06:00:00+00:00 \
 GEN_MODEL_TIMEZONE=UTC \
 GEN_MODEL_TIME_SPEED=1 \
 GEN_TICK_SECONDS=60 \
@@ -153,6 +188,9 @@ docker compose run --rm --no-deps generator
 sleep 10
 bash scripts/run_batch.sh
 ```
+
+Ручной сценарий выше нужен для отладки. В обычной проверке используйте
+`make generated-history-analytics`, чтобы не забыть Superset и итоговый check.
 
 Manifest можно посмотреть так:
 
@@ -175,7 +213,7 @@ docker compose run -d --name startup-history-live --no-deps \
   -e GEN_STATE_RESET=false \
   -e GEN_SEED=4242 \
   -e GEN_MODEL_T0=2026-01-01T00:00:00+00:00 \
-  -e GEN_MODEL_T_END=2026-01-02T00:00:00+00:00 \
+  -e GEN_MODEL_T_END=2026-01-01T06:00:00+00:00 \
   -e GEN_MODEL_TIMEZONE=UTC \
   -e GEN_MODEL_TIME_SPEED=1 \
   -e GEN_TICK_SECONDS=60 \
@@ -195,7 +233,7 @@ bash scripts/run_batch.sh
 ```sql
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end
 SELECT
     uniqExact(user_domain_id) AS users,
     uniqExact(click_id) AS visits,
@@ -219,7 +257,7 @@ docker compose exec -T clickhouse clickhouse-client \
   --query "
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end
 SELECT hex(sipHash128(groupArray(tuple(
     event_id,
     click_id,
@@ -245,7 +283,7 @@ FROM (
 ```sql
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end,
     users AS (
         SELECT user_domain_id, uniqExact(click_id) AS visits
         FROM dm.v_events_enriched
@@ -266,7 +304,7 @@ FROM users;
 ```sql
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end,
     30 AS max_session_events,
     sessions AS (
         SELECT
@@ -296,7 +334,7 @@ FROM sessions;
 ```sql
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end,
     sessions AS (
         SELECT
             click_id,
@@ -327,7 +365,7 @@ FROM sessions;
 ```sql
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end,
     sessions AS (
         SELECT
             click_id,
@@ -356,8 +394,8 @@ FROM sessions;
 ```sql
 WITH
     toDateTime64('2026-01-01 00:00:00', 6) AS t0,
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
-    toDateTime64('2026-01-02 00:10:00', 6) AS t_live_end
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end,
+    toDateTime64('2026-01-01 06:10:00', 6) AS t_live_end
 SELECT
     count() AS events,
     uniqExact(event_id) AS unique_events,
@@ -373,7 +411,7 @@ WHERE event_ts >= t0 AND event_ts < t_live_end;
 
 ```sql
 WITH
-    toDateTime64('2026-01-02 00:00:00', 6) AS t_end,
+    toDateTime64('2026-01-01 06:00:00', 6) AS t_end,
     crossing AS (
         SELECT
             click_id,
@@ -518,32 +556,19 @@ curl -s -u admin:admin -X POST http://localhost:3000/api/admin/provisioning/dash
 docker compose restart grafana
 ```
 
-## Рекомендуемый сценарий (фаза 2)
+## Рекомендуемый сценарий
 
 ```bash
-# 1. Запуск инфраструктуры
-make up
+# Полный чистый путь: генерация -> STG -> ODS -> DDS -> DM -> Superset
+make generated-history-analytics
 
-# 2. Инициализация схемы (один раз)
-# Airflow UI -> DAGs -> ddl_init -> Trigger DAG
-
-# 3. Загрузка данных через Airflow
-# Airflow UI -> DAGs -> kafka_load -> Trigger DAG with config
-# Параметры по умолчанию: limit=0, reset_topics=true
-
-# 4. Запуск ETL
-# Airflow UI -> DAGs -> etl_pipeline -> Trigger DAG with config
-# {"full_refresh": true}
-
-# 5. Проверка результатов
-docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM ods.browser_event"
-docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT count() FROM dds.event"
-docker compose exec -T clickhouse clickhouse-client --user=default --password=123456 --query "SELECT * FROM dm.dq_summary"
+# Повторная техническая проверка без пересоздания данных
+make generated-history-check
 ```
 
 ## Быстрые проверки
 
-- Kafka ingest: наличие данных в `stg.*` и типизированных строк в `ods.*`.
+- Kafka ingest: наличие данных генератора в `stg.*` и типизированных строк в `ods.*`.
 - Airflow UI: `http://localhost:8080` показывает DAG `ddl_init`, `kafka_load`, `etl_pipeline`.
 - BI: витрина `dm.v_events_enriched` отвечает за разумное время при фильтре по дате.
 
@@ -760,6 +785,7 @@ curl -s -X POST -u admin:admin http://localhost:3000/api/admin/provisioning/aler
     docker compose up -d clickhouse
     docker compose up -d --force-recreate superset-init superset
     ```
-- После `docker compose down -v` нужно повторно прогнать: `ddl_init` -> `kafka_load` -> `etl_pipeline`.
-- После `make clean`/`down -v` Superset стартует, но витрины `dm.*` ещё пустые или отсутствуют до прогона ETL; после `ddl_init` -> `kafka_load` -> `etl_pipeline` выполнить `make superset-init`.
-- Для демо по умолчанию использовать малый срез данных; полный прогон делать осознанно.
+- После `docker compose down -v` нужно повторно прогнать `make generated-history-analytics`.
+- После `make clean`/`down -v` Superset стартует, но витрины `dm.*` ещё пустые или
+  отсутствуют до прогона стартовой истории; используйте `make generated-history-analytics`.
+- Архивную загрузку `make data` использовать только для ручных экспериментов.

@@ -4,10 +4,10 @@
 
 ## Исполняемые файлы
 
-### Airflow (основной путь запуска)
+### Airflow (ручной и учебный путь запуска)
 
 - `airflow/dags/ddl_init_dag.py` — инициализация схемы ClickHouse
-- `airflow/dags/kafka_load_dag.py` — загрузка в Kafka из JSONL
+- `airflow/dags/kafka_load_dag.py` — архивная загрузка в Kafka из JSONL; не основной источник аналитики
 - `airflow/dags/etl_pipeline_dag.py` — ETL процесс STG -> ODS -> DDS -> DM
 - `airflow/dags/utils/kafka_helpers.py` — helper-функции для Kafka
 - `airflow/dags/utils/sql_helpers.py` — чтение и подготовка SQL-файлов для DAG
@@ -35,17 +35,20 @@ DDL (форма таблиц):
 - `superset/init_superset.py` — подключение к ClickHouse + создание датасетов
 - `superset/create_dashboard.py` — сборка дашборда с чартами
 
-### Скрипты (запасной путь, не основной)
+### Скрипты
 
-Shell-скрипты `scripts/*` (и обёртки `make ddl`/`make data`/`make transform`) — это локальный fallback в обход Airflow. Основной путь запуска — DAG-и Airflow (см. выше).
+Shell-скрипты `scripts/*` и Makefile-обёртки дают повторяемый локальный запуск.
+Основной чистый путь аналитики — `make generated-history-analytics`.
 
 - `scripts/apply_clickhouse_ddl.sh` — применение DDL
-- `scripts/load_kafka_data.sh` — загрузка в Kafka
+- `scripts/load_kafka_data.sh` — архивная загрузка `data/*.jsonl` в Kafka
 - `scripts/run_batch.sh` — batch-процесс
+- `scripts/run_generated_history_analytics.sh` — чистый прогон стартовой истории до DM и Superset
+- `scripts/check_generated_analytics.sh` — проверка DM-витрин и Superset metadata на данных генерации
 
 ## Данные и конфиги
 
-- `data/*.jsonl` — исходные данные (могут быть грязными)
+- `data/*.jsonl` — архивная фактура для генератора; не основной источник аналитики
 - `configs/` — конфиги ClickHouse, Prometheus, Grafana
 - `configs/prometheus.yml` — конфигурация Prometheus (scrape targets для ClickHouse, Kafka, Airflow)
 - `configs/statsd_mapping.yml` — маппинг StatsD → Prometheus метрик для Airflow

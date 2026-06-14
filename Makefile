@@ -1,4 +1,5 @@
 .PHONY: up down clean ddl data transform logs \
+        generated-history-analytics generated-history-check \
         reload-monitoring recover-monitoring \
         superset-init superset-dashboard superset-ui superset-restart \
         generator-up generator-down generator-logs generator-restart \
@@ -36,6 +37,14 @@ data:
 
 transform:
 	bash ./scripts/run_batch.sh
+
+# Чистый аналитический прогон: стартовая история генератора -> STG -> ODS -> DDS -> DM -> Superset
+generated-history-analytics:
+	COMPOSE_BIN="$(COMPOSE)" bash ./scripts/run_generated_history_analytics.sh
+
+# Повторяемая проверка после прогона стартовой истории
+generated-history-check:
+	COMPOSE_BIN="$(COMPOSE)" bash ./scripts/check_generated_analytics.sh
 
 # Перезагрузка конфигурации мониторинга (после изменений в provisioning)
 reload-monitoring:
